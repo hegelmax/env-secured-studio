@@ -1,0 +1,28 @@
+<Project Sdk="Microsoft.NET.Sdk.WindowsDesktop">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>EnvSecured</AssemblyName>
+    <TargetFramework>net48</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <ApplicationIcon>Assets\icon.ico</ApplicationIcon>
+    <Product>EnvSecured Studio</Product>
+    <Description>Windows desktop and CLI tool for managing encrypted service and environment configuration vaults.</Description>
+    <Copyright>Maxim Hegel © 2026</Copyright>
+    <LangVersion>latest</LangVersion>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)' == 'Release'">
+    <DebugType>none</DebugType>
+    <DebugSymbols>false</DebugSymbols>
+    <GenerateSupportedRuntime>false</GenerateSupportedRuntime>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\EnvSecured.Core\EnvSecured.Core.csproj" />
+    <ProjectReference Include="..\EnvSecured.Crypto\EnvSecured.Crypto.csproj" />
+    <Reference Include="System.Web.Extensions" />
+    <PackageReference Include="Costura.Fody" Version="6.0.0" PrivateAssets="All" />
+    <PackageReference Include="Fody" Version="6.8.2" PrivateAssets="All" />
+  </ItemGroup>
+  <Target Name="RemoveEmbeddedProjectReferenceCopies" AfterTargets="AfterBuild" Condition="'$(Configuration)' == 'Release'">
+    <Delete Files="$(TargetDir)EnvSecured.Core.dll;$(TargetDir)EnvSecured.Core.pdb;$(TargetDir)EnvSecured.Crypto.dll;$(TargetDir)EnvSecured.Crypto.pdb" TreatErrorsAsWarnings="true" />
+  </Target>
+</Project>

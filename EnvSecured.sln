@@ -1,0 +1,30 @@
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "EnvSecured.Core", "src\EnvSecured.Core\EnvSecured.Core.csproj", "{8D1466F8-7903-4B9D-8F87-78431CF2F71B}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "EnvSecured.Crypto", "src\EnvSecured.Crypto\EnvSecured.Crypto.csproj", "{F75592A5-68C5-4123-90F8-BCBB8B758656}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "EnvSecured.WinForms", "src\EnvSecured.WinForms\EnvSecured.WinForms.csproj", "{882C5C02-2587-4665-AC43-82F8F2D5D9D7}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{8D1466F8-7903-4B9D-8F87-78431CF2F71B}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{8D1466F8-7903-4B9D-8F87-78431CF2F71B}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{8D1466F8-7903-4B9D-8F87-78431CF2F71B}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{8D1466F8-7903-4B9D-8F87-78431CF2F71B}.Release|Any CPU.Build.0 = Release|Any CPU
+		{F75592A5-68C5-4123-90F8-BCBB8B758656}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{F75592A5-68C5-4123-90F8-BCBB8B758656}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{F75592A5-68C5-4123-90F8-BCBB8B758656}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{F75592A5-68C5-4123-90F8-BCBB8B758656}.Release|Any CPU.Build.0 = Release|Any CPU
+		{882C5C02-2587-4665-AC43-82F8F2D5D9D7}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{882C5C02-2587-4665-AC43-82F8F2D5D9D7}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{882C5C02-2587-4665-AC43-82F8F2D5D9D7}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{882C5C02-2587-4665-AC43-82F8F2D5D9D7}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+EndGlobal
