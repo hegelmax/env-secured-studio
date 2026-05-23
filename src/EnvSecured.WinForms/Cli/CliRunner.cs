@@ -44,20 +44,31 @@ namespace EnvSecured.WinForms.Cli
                 switch (command)
                 {
                     case "new": return NewProject(options);
+                    case "save-as": return SaveAs(options);
                     case "info": return WithProject(options, p => PrintInfo(p));
                     case "validate": return WithProject(options, p => Validate(p));
                     case "list": return WithProject(options, p => List(p, options));
                     case "add-service": return WithProjectSave(options, p => AddService(p, options));
+                    case "edit-service": return WithProjectSave(options, p => EditService(p, options));
+                    case "delete-service": return WithProjectSave(options, p => DeleteService(p, options));
                     case "add-env": return WithProjectSave(options, p => AddEnvironment(p, options));
+                    case "edit-env": return WithProjectSave(options, p => EditEnvironment(p, options));
+                    case "delete-env": return WithProjectSave(options, p => DeleteEnvironment(p, options));
                     case "add-var": return WithProjectSave(options, p => AddVariable(p, options));
+                    case "edit-var": return WithProjectSave(options, p => EditVariable(p, options));
+                    case "delete-var": return WithProjectSave(options, p => DeleteVariable(p, options));
                     case "set": return WithProjectSave(options, p => SetValue(p, options));
                     case "delete-value": return WithProjectSave(options, p => DeleteValue(p, options));
                     case "use": return WithProjectSave(options, p => SetContract(p, options, true));
                     case "unuse": return WithProjectSave(options, p => SetContract(p, options, false));
                     case "import": return WithProjectSave(options, p => ImportConfig(p, options));
                     case "settings": return WithProjectSave(options, p => UpdateSettings(p, options));
+                    case "project": return WithProjectSave(options, p => UpdateProject(p, options));
+                    case "export-target": return WithProjectSave(options, p => UpdateExportTarget(p, options));
+                    case "auto-assign": return WithProjectSave(options, p => AutoAssignContracts(p, options));
+                    case "compact-values": return WithProjectSave(options, p => CompactValues(p));
                     case "export":
-                    case "render": return WithProject(options, p => ExportFiles(p, options), true);
+                    case "render": return WithProjectPath(options, (p, f) => ExportFiles(p, options, f), true);
                     default:
                         Error("Unknown command: " + command);
                         PrintHelp();
@@ -77,18 +88,29 @@ namespace EnvSecured.WinForms.Cli
             switch (value.ToLowerInvariant())
             {
                 case "new":
+                case "save-as":
                 case "info":
                 case "validate":
                 case "list":
                 case "add-service":
+                case "edit-service":
+                case "delete-service":
                 case "add-env":
+                case "edit-env":
+                case "delete-env":
                 case "add-var":
+                case "edit-var":
+                case "delete-var":
                 case "set":
                 case "delete-value":
                 case "use":
                 case "unuse":
                 case "import":
                 case "settings":
+                case "project":
+                case "export-target":
+                case "auto-assign":
+                case "compact-values":
                 case "export":
                 case "render":
                     return true;
@@ -107,6 +129,44 @@ namespace EnvSecured.WinForms.Cli
             return 0;
         }
 
+        private static int SaveAs(Dictionary<string, string> options)
+        {
+            var source = Required(options, "file");
+            var target = Required(options, "to");
+            var sourceFullPath = Path.GetFullPath(source);
+            var targetFullPath = Path.GetFullPath(target);
+            if (!File.Exists(sourceFullPath))
+            {
+                throw new InvalidOperationException("Source vault file does not exist.");
+            }
+
+            if (string.Equals(sourceFullPath, targetFullPath, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException("Source and target vault file paths are the same.");
+            }
+
+            var targetDirectory = Path.GetDirectoryName(targetFullPath);
+            if (!string.IsNullOrWhiteSpace(targetDirectory))
+            {
+                Directory.CreateDirectory(targetDirectory);
+            }
+
+            var overwrite = options.ContainsKey("overwrite") && ParseBool(options["overwrite"]);
+            File.Copy(sourceFullPath, targetFullPath, overwrite);
+            if (options.ContainsKey("delete-source") && ParseBool(options["delete-source"]))
+            {
+                File.Delete(sourceFullPath);
+                VaultFileService.DeleteRecoveryBackup(sourceFullPath);
+                Console.WriteLine("Moved " + sourceFullPath + " -> " + targetFullPath);
+            }
+            else
+            {
+                Console.WriteLine("Saved copy " + targetFullPath);
+            }
+
+            return 0;
+        }
+
         private static int WithProject(Dictionary<string, string> options, Func<ProjectModel, int> action, bool cliExport = false)
         {
             var file = Required(options, "file");
@@ -116,6 +176,17 @@ namespace EnvSecured.WinForms.Cli
             }
             var project = LoadProject(file, options);
             return action(project);
+        }
+
+        private static int WithProjectPath(Dictionary<string, string> options, Func<ProjectModel, string, int> action, bool cliExport = false)
+        {
+            var file = Required(options, "file");
+            if (cliExport)
+            {
+                RequireExplicitPasswordForCliExport(file, options);
+            }
+            var project = LoadProject(file, options);
+            return action(project, file);
         }
 
         private static int WithProjectSave(Dictionary<string, string> options, Func<ProjectModel, int> action)
@@ -157,7 +228,7 @@ namespace EnvSecured.WinForms.Cli
             var what = (Get(options, "what") ?? "variables").ToLowerInvariant();
             if (what == "services")
             {
-                foreach (var s in project.Services.OrderBy(s => s.SortOrder)) Console.WriteLine($"{s.Id}\t{s.Name}\t{s.DefaultPrefix}");
+                foreach (var s in project.Services.OrderBy(s => s.SortOrder)) Console.WriteLine($"{s.Id}\t{s.Name}\t{s.DefaultPrefix}\tsharedWithoutContract={s.AllowSharedVariablesWithoutContract}");
                 return 0;
             }
             if (what == "envs" || what == "environments")
@@ -167,16 +238,18 @@ namespace EnvSecured.WinForms.Cli
             }
             if (what == "values")
             {
+                var showSecrets = Flag(options, "show-secrets");
                 foreach (var v in project.Values.OrderBy(v => VariableKey(project, v.VariableId)))
                 {
-                    Console.WriteLine($"{VariableKey(project, v.VariableId)}\t{v.Scope}\t{ServiceName(project, v.ServiceId)}\t{EnvironmentName(project, v.EnvironmentId)}\t{v.Value}");
+                    var variable = project.Variables.FirstOrDefault(x => x.Id == v.VariableId);
+                    Console.WriteLine($"{VariableKey(project, v.VariableId)}\t{v.Scope}\t{ServiceName(project, v.ServiceId)}\t{EnvironmentName(project, v.EnvironmentId)}\t{CliDisplayValue(variable, v.Value, showSecrets)}");
                 }
                 return 0;
             }
 
             foreach (var v in project.Variables.OrderBy(v => v.SortOrder).ThenBy(v => v.Key))
             {
-                Console.WriteLine($"{v.Key}\tsecret={v.IsSecret}\trequired={IsRequired(project, v.Id)}\tallowNull={v.AllowNull}\tallowBlank={v.AllowBlank}");
+                Console.WriteLine($"{v.Key}\tsecret={v.IsSecret}\tsharedSecret={v.AllowSharedSecret}\trequired={IsRequired(project, v.Id)}\tallowNull={v.AllowNull}\tallowBlank={v.AllowBlank}");
             }
             return 0;
         }
@@ -193,10 +266,42 @@ namespace EnvSecured.WinForms.Cli
                 DisplayName = name,
                 OutputFolder = Get(options, "folder") ?? id,
                 DefaultPrefix = Get(options, "prefix") ?? id.ToUpperInvariant() + "_",
+                AllowSharedVariablesWithoutContract = !Flag(options, "strict-contracts"),
                 SortOrder = project.Services.Count * 10,
                 IsActive = true
             });
             Console.WriteLine("Added service " + id);
+            return 0;
+        }
+
+        private static int EditService(ProjectModel project, Dictionary<string, string> options)
+        {
+            var service = FindService(project, Required(options, "service")) ?? throw new InvalidOperationException("Service not found.");
+            if (options.ContainsKey("name"))
+            {
+                var name = options["name"].Trim();
+                if (project.Services.Any(s => s != service && Same(s.Name, name))) throw new InvalidOperationException("Service name already exists.");
+                service.Name = name;
+            }
+            if (options.ContainsKey("display")) service.DisplayName = options["display"];
+            if (options.ContainsKey("description")) service.Description = options["description"];
+            if (options.ContainsKey("folder")) service.OutputFolder = options["folder"];
+            if (options.ContainsKey("prefix")) service.DefaultPrefix = options["prefix"];
+            if (options.ContainsKey("active")) service.IsActive = ParseBool(options["active"]);
+            if (options.ContainsKey("shared-without-contract")) service.AllowSharedVariablesWithoutContract = ParseBool(options["shared-without-contract"]);
+            ApplyServiceExportNames(service, options);
+            Console.WriteLine("Updated service " + service.Id);
+            return 0;
+        }
+
+        private static int DeleteService(ProjectModel project, Dictionary<string, string> options)
+        {
+            var service = FindService(project, Required(options, "service")) ?? throw new InvalidOperationException("Service not found.");
+            project.Services.Remove(service);
+            project.Contracts.RemoveAll(c => c.ServiceId == service.Id);
+            project.Values.RemoveAll(v => v.ServiceId == service.Id);
+            project.Settings?.OutputTargets?.RemoveAll(t => t.ServiceId == service.Id);
+            Console.WriteLine("Deleted service " + service.Id);
             return 0;
         }
 
@@ -207,6 +312,32 @@ namespace EnvSecured.WinForms.Cli
             if (project.Environments.Any(e => e.Id == id || Same(e.Name, name))) throw new InvalidOperationException("Environment already exists.");
             project.Environments.Add(new EnvironmentModel { Id = id, Name = id, DisplayName = name, SortOrder = project.Environments.Count * 10, IsActive = true });
             Console.WriteLine("Added environment " + id);
+            return 0;
+        }
+
+        private static int EditEnvironment(ProjectModel project, Dictionary<string, string> options)
+        {
+            var env = FindEnvironment(project, Required(options, "env")) ?? throw new InvalidOperationException("Environment not found.");
+            if (options.ContainsKey("name"))
+            {
+                var name = options["name"].Trim();
+                if (project.Environments.Any(e => e != env && Same(e.Name, name))) throw new InvalidOperationException("Environment name already exists.");
+                env.Name = name;
+            }
+            if (options.ContainsKey("display")) env.DisplayName = options["display"];
+            if (options.ContainsKey("active")) env.IsActive = ParseBool(options["active"]);
+            ApplyEnvironmentExportNames(env, options);
+            Console.WriteLine("Updated environment " + env.Id);
+            return 0;
+        }
+
+        private static int DeleteEnvironment(ProjectModel project, Dictionary<string, string> options)
+        {
+            var env = FindEnvironment(project, Required(options, "env")) ?? throw new InvalidOperationException("Environment not found.");
+            project.Environments.Remove(env);
+            project.Values.RemoveAll(v => v.EnvironmentId == env.Id);
+            project.Settings?.OutputTargets?.RemoveAll(t => t.EnvironmentId == env.Id);
+            Console.WriteLine("Deleted environment " + env.Id);
             return 0;
         }
 
@@ -222,6 +353,7 @@ namespace EnvSecured.WinForms.Cli
                 DisplayName = key,
                 IsSecret = secret,
                 Type = secret ? VariableType.Password : VariableType.String,
+                AllowSharedSecret = secret && Flag(options, "allow-shared-secret"),
                 AllowNull = Flag(options, "allow-null"),
                 AllowBlank = Flag(options, "allow-blank"),
                 SortOrder = project.Variables.Count * 10,
@@ -230,6 +362,54 @@ namespace EnvSecured.WinForms.Cli
             project.Variables.Add(variable);
             AutoAssignVariableToMatchingServices(project, variable);
             Console.WriteLine("Added variable " + key);
+            return 0;
+        }
+
+        private static int EditVariable(ProjectModel project, Dictionary<string, string> options)
+        {
+            var variable = FindVariable(project, Required(options, "key")) ?? throw new InvalidOperationException("Variable not found.");
+            if (options.ContainsKey("new-key"))
+            {
+                var key = options["new-key"].Trim().ToUpperInvariant();
+                if (project.Variables.Any(v => v != variable && Same(v.Key, key))) throw new InvalidOperationException("Variable already exists.");
+                variable.Key = key;
+            }
+            if (options.ContainsKey("display")) variable.DisplayName = options["display"];
+            if (options.ContainsKey("description")) variable.Description = options["description"];
+            if (options.ContainsKey("group")) variable.GroupName = options["group"];
+            if (options.ContainsKey("type")) variable.Type = ParseVariableType(options["type"]);
+            if (options.ContainsKey("secret"))
+            {
+                variable.IsSecret = ParseBool(options["secret"]);
+                if (variable.IsSecret) variable.Type = VariableType.Password;
+                else variable.AllowSharedSecret = false;
+            }
+            if (options.ContainsKey("allow-shared-secret"))
+            {
+                variable.AllowSharedSecret = ParseBool(options["allow-shared-secret"]);
+                if (variable.AllowSharedSecret)
+                {
+                    variable.IsSecret = true;
+                    variable.Type = VariableType.Password;
+                }
+            }
+            if (options.ContainsKey("allow-null")) variable.AllowNull = ParseBool(options["allow-null"]);
+            if (options.ContainsKey("allow-blank")) variable.AllowBlank = ParseBool(options["allow-blank"]);
+            if (options.ContainsKey("active")) variable.IsActive = ParseBool(options["active"]);
+            if (options.ContainsKey("example")) variable.DefaultExampleValue = options["example"];
+            if (options.ContainsKey("placeholder")) variable.PlaceholderPattern = options["placeholder"];
+            AutoAssignVariableToMatchingServices(project, variable);
+            Console.WriteLine("Updated variable " + variable.Key);
+            return 0;
+        }
+
+        private static int DeleteVariable(ProjectModel project, Dictionary<string, string> options)
+        {
+            var variable = FindVariable(project, Required(options, "key")) ?? throw new InvalidOperationException("Variable not found.");
+            project.Variables.Remove(variable);
+            project.Values.RemoveAll(v => v.VariableId == variable.Id);
+            project.Contracts.RemoveAll(c => c.VariableId == variable.Id);
+            Console.WriteLine("Deleted variable " + variable.Key);
             return 0;
         }
 
@@ -282,7 +462,7 @@ namespace EnvSecured.WinForms.Cli
             else
             {
                 var contract = project.Contracts.FirstOrDefault(c => c.VariableId == variable.Id && c.ServiceId == service.Id);
-                if (HasGlobalValue(project, variable.Id))
+                if (ProjectService.HasGlobalValue(project, variable.Id))
                 {
                     if (contract == null)
                     {
@@ -344,8 +524,16 @@ namespace EnvSecured.WinForms.Cli
             {
                 var required = ParseBool(options["cli-export-password"]);
                 var key = EnsureCrypto(project, options);
-                project.Settings.CliExportPasswordRequired = required;
-                project.Settings.CliExportPasswordRequiredEncrypted = CryptoService.EncryptString(required ? "required:true:v1" : "required:false:v1", key);
+                try
+                {
+                    project.Settings.CliExportPasswordRequired = required;
+                    project.Settings.CliExportPasswordRequiredPolicy = required;
+                    project.Settings.CliExportPasswordRequiredEncrypted = CryptoService.EncryptString(required ? "required:true:v1" : "required:false:v1", key);
+                }
+                finally
+                {
+                    ClearKey(key);
+                }
             }
             if (options.ContainsKey("encryption")) project.Settings.EncryptionMode = NormalizeEncryptionMode(options["encryption"]);
             project.Settings.EncryptAllValues = project.Settings.EncryptionMode == "AllValues";
@@ -353,10 +541,88 @@ namespace EnvSecured.WinForms.Cli
             return 0;
         }
 
-        private static int ExportFiles(ProjectModel project, Dictionary<string, string> options)
+        private static int UpdateProject(ProjectModel project, Dictionary<string, string> options)
+        {
+            if (options.ContainsKey("name")) project.ProjectName = options["name"];
+            if (options.ContainsKey("id")) project.ProjectId = options["id"];
+            if (options.ContainsKey("description")) project.Description = options["description"];
+            Console.WriteLine("Updated project.");
+            return 0;
+        }
+
+        private static int UpdateExportTarget(ProjectModel project, Dictionary<string, string> options)
         {
             project.Settings = project.Settings ?? new ProjectSettings();
-            var root = Get(options, "output-root") ?? project.Settings.OutputRootFolder;
+            project.Settings.OutputTargets = project.Settings.OutputTargets ?? new List<OutputTargetSetting>();
+            if (Flag(options, "all"))
+            {
+                var value = !options.ContainsKey("enabled") || ParseBool(options["enabled"]);
+                project.Settings.OutputTargets.Clear();
+                foreach (var service in new ServiceModel[] { null }.Concat(project.Services.OrderBy(s => s.SortOrder)))
+                {
+                    foreach (var env in new EnvironmentModel[] { null }.Concat(project.Environments.OrderBy(e => e.SortOrder)))
+                    {
+                        project.Settings.OutputTargets.Add(new OutputTargetSetting { ServiceId = service?.Id, EnvironmentId = env?.Id, Enabled = value });
+                    }
+                }
+                Console.WriteLine("Updated all export targets.");
+                return 0;
+            }
+
+            var serviceName = Get(options, "service");
+            var envName = Get(options, "env");
+            var serviceId = string.IsNullOrWhiteSpace(serviceName) || Same(serviceName, "global") ? null : (FindService(project, serviceName) ?? throw new InvalidOperationException("Service not found.")).Id;
+            var envId = string.IsNullOrWhiteSpace(envName) || Same(envName, "global") ? null : (FindEnvironment(project, envName) ?? throw new InvalidOperationException("Environment not found.")).Id;
+            var enabled = !options.ContainsKey("enabled") || ParseBool(options["enabled"]);
+            var target = project.Settings.OutputTargets.FirstOrDefault(t => SameNullable(t.ServiceId, serviceId) && SameNullable(t.EnvironmentId, envId));
+            if (target == null)
+            {
+                project.Settings.OutputTargets.Add(new OutputTargetSetting { ServiceId = serviceId, EnvironmentId = envId, Enabled = enabled });
+            }
+            else
+            {
+                target.Enabled = enabled;
+            }
+            Console.WriteLine("Updated export target.");
+            return 0;
+        }
+
+        private static int AutoAssignContracts(ProjectModel project, Dictionary<string, string> options)
+        {
+            var key = Get(options, "key");
+            if (!string.IsNullOrWhiteSpace(key))
+            {
+                var variable = FindVariable(project, key) ?? throw new InvalidOperationException("Variable not found.");
+                AutoAssignVariableToMatchingServices(project, variable);
+                Console.WriteLine("Auto-assigned " + variable.Key);
+                return 0;
+            }
+
+            foreach (var variable in project.Variables)
+            {
+                AutoAssignVariableToMatchingServices(project, variable);
+            }
+            Console.WriteLine("Auto-assigned variables by service prefixes.");
+            return 0;
+        }
+
+        private static int CompactValues(ProjectModel project)
+        {
+            var compacted = project.Values
+                .Select((value, index) => new { value, index })
+                .GroupBy(x => new { x.value.VariableId, x.value.Scope, x.value.ServiceId, x.value.EnvironmentId })
+                .Select(g => g.OrderBy(x => x.index).Last().value)
+                .ToList();
+            var removed = project.Values.Count - compacted.Count;
+            project.Values = compacted;
+            Console.WriteLine("Removed " + removed + " duplicate value(s).");
+            return 0;
+        }
+
+        private static int ExportFiles(ProjectModel project, Dictionary<string, string> options, string projectFilePath)
+        {
+            project.Settings = project.Settings ?? new ProjectSettings();
+            var root = ResolveOutputRootFolder(Get(options, "output-root") ?? project.Settings.OutputRootFolder, projectFilePath);
             if (string.IsNullOrWhiteSpace(root)) throw new InvalidOperationException("Set --output-root or project output settings.");
             var format = NormalizeOutputFormat(Get(options, "format") ?? project.Settings.OutputFormat);
             var extension = Get(options, "ext") ?? (options.ContainsKey("format") ? DefaultOutputExtension(format) : GetProjectExtension(project, format));
@@ -386,6 +652,17 @@ namespace EnvSecured.WinForms.Cli
             }
             Console.WriteLine("Rendered " + rendered + " file(s).");
             return 0;
+        }
+
+        private static string ResolveOutputRootFolder(string outputRootFolder, string projectFilePath)
+        {
+            if (string.IsNullOrWhiteSpace(outputRootFolder) || Path.IsPathRooted(outputRootFolder))
+            {
+                return outputRootFolder;
+            }
+
+            var baseFolder = Path.GetDirectoryName(Path.GetFullPath(projectFilePath));
+            return Path.GetFullPath(Path.Combine(baseFolder ?? Environment.CurrentDirectory, outputRootFolder));
         }
 
         private static List<OutputTarget> ResolveExportTargets(ProjectModel project, Dictionary<string, string> options)
@@ -428,7 +705,7 @@ namespace EnvSecured.WinForms.Cli
             var effective = EffectiveConfigService.Build(project, service?.Id, environment?.Id).Where(x => !x.Missing);
             if (service != null)
             {
-                effective = effective.Where(x => IsVariableUsedByService(project, x.Variable.Id, service.Id));
+                effective = effective.Where(x => ProjectService.IsVariableUsedByService(project, x.Variable.Id, service.Id));
             }
             return effective.OrderBy(x => x.Variable.SortOrder).ThenBy(x => x.Variable.Key).ToDictionary(x => x.Variable.Key, x => x.Value ?? string.Empty);
         }
@@ -472,24 +749,41 @@ namespace EnvSecured.WinForms.Cli
         {
             var json = File.ReadAllText(file);
             var serializer = new JavaScriptSerializer { MaxJsonLength = int.MaxValue };
-            if (json.IndexOf("\"EnvSecured.EncryptedProject.v1\"", StringComparison.OrdinalIgnoreCase) >= 0)
+            if (TryReadEncryptedEnvelope(json, serializer, out var envelope))
             {
-                var envelope = serializer.Deserialize<EncryptedProjectFile>(json);
                 var key = DeriveKey(envelope.Crypto, options);
-                var projectJson = CryptoService.DecryptString(envelope.Payload, key);
-                var project = serializer.Deserialize<ProjectModel>(projectJson);
-                project.Crypto = envelope.Crypto;
-                DecryptValues(project, key);
-                DecryptCliExportPolicy(project, key);
-                return project;
+                try
+                {
+                    var projectJson = CryptoService.DecryptString(envelope.Payload, key);
+                    var project = serializer.Deserialize<ProjectModel>(projectJson);
+                    project.Crypto = envelope.Crypto;
+                    DecryptValues(project, key);
+                    DecryptCliExportPolicy(project, key);
+                    return project;
+                }
+                finally
+                {
+                    ClearKey(key);
+                }
             }
 
             var loaded = VaultFileService.Load(file);
-            if (ProjectHasEncryptedPayloads(loaded))
+            if (ProjectHasEncryptedValues(loaded))
             {
                 var key = DeriveKey(loaded.Crypto, options);
-                DecryptValues(loaded, key);
-                DecryptCliExportPolicy(loaded, key);
+                try
+                {
+                    DecryptValues(loaded, key);
+                    DecryptCliExportPolicy(loaded, key);
+                }
+                finally
+                {
+                    ClearKey(key);
+                }
+            }
+            else if (loaded.Settings != null)
+            {
+                loaded.Settings.CliExportPasswordRequired = loaded.Settings.CliExportPasswordRequiredPolicy;
             }
             return loaded;
         }
@@ -497,7 +791,26 @@ namespace EnvSecured.WinForms.Cli
         private static void RequireExplicitPasswordForCliExport(string file, Dictionary<string, string> options)
         {
             if (HasExplicitPassword(options)) return;
+            if (!ReadCliExportPasswordRequired(file)) return;
             throw new InvalidOperationException("CLI export for this project requires --password or ENVSECURED_PASSWORD.");
+        }
+
+        private static bool ReadCliExportPasswordRequired(string file)
+        {
+            var json = File.ReadAllText(file);
+            var serializer = new JavaScriptSerializer { MaxJsonLength = int.MaxValue };
+            if (TryReadEncryptedEnvelope(json, serializer, out _))
+            {
+                return true;
+            }
+
+            var project = serializer.Deserialize<ProjectModel>(json);
+            return project?.Settings?.CliExportPasswordRequiredPolicy != false;
+        }
+
+        private static bool TryReadEncryptedEnvelope(string json, JavaScriptSerializer serializer, out EncryptedProjectFile envelope)
+        {
+            return EncryptedEnvelopeDetector.TryRead(json, serializer, out envelope);
         }
 
         private static bool HasExplicitPassword(Dictionary<string, string> options)
@@ -506,10 +819,9 @@ namespace EnvSecured.WinForms.Cli
                 !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("ENVSECURED_PASSWORD"));
         }
 
-        private static bool ProjectHasEncryptedPayloads(ProjectModel project)
+        private static bool ProjectHasEncryptedValues(ProjectModel project)
         {
-            return project.Values.Any(v => v.IsEncrypted && v.EncryptedValue != null) ||
-                project.Settings?.CliExportPasswordRequiredEncrypted != null;
+            return project.Values.Any(v => v.IsEncrypted && v.EncryptedValue != null);
         }
 
         private static void DecryptCliExportPolicy(ProjectModel project, byte[] key)
@@ -523,6 +835,7 @@ namespace EnvSecured.WinForms.Cli
 
             var value = CryptoService.DecryptString(project.Settings.CliExportPasswordRequiredEncrypted, key);
             project.Settings.CliExportPasswordRequired = string.Equals(value, "required:true:v1", StringComparison.Ordinal);
+            project.Settings.CliExportPasswordRequiredPolicy = project.Settings.CliExportPasswordRequired;
         }
 
         private static void SaveProject(ProjectModel project, string file, Dictionary<string, string> options)
@@ -532,35 +845,49 @@ namespace EnvSecured.WinForms.Cli
             if (mode == "WholeJson")
             {
                 var key = EnsureCrypto(project, options);
-                var serializer = new JavaScriptSerializer { MaxJsonLength = int.MaxValue };
-                var payloadProject = Clone(project);
-                foreach (var value in payloadProject.Values)
+                try
                 {
-                    value.IsEncrypted = false;
-                    value.EncryptedValue = null;
+                    var serializer = new JavaScriptSerializer { MaxJsonLength = int.MaxValue };
+                    var payloadProject = Clone(project);
+                    foreach (var value in payloadProject.Values)
+                    {
+                        value.IsEncrypted = false;
+                        value.EncryptedValue = null;
+                    }
+                    var envelope = new EncryptedProjectFile { Crypto = payloadProject.Crypto, Payload = CryptoService.EncryptString(serializer.Serialize(payloadProject), key) };
+                    SaveText(serializer.Serialize(envelope), file);
+                    return;
                 }
-                var envelope = new EncryptedProjectFile { Crypto = payloadProject.Crypto, Payload = CryptoService.EncryptString(serializer.Serialize(payloadProject), key) };
-                SaveText(serializer.Serialize(envelope), file);
-                return;
+                finally
+                {
+                    ClearKey(key);
+                }
             }
 
             var storage = Clone(project);
             if (mode == "AllValues" || mode == "SecretsOnly")
             {
                 var key = EnsureCrypto(storage, options);
-                foreach (var value in storage.Values)
+                try
                 {
-                    var variable = storage.Variables.FirstOrDefault(v => v.Id == value.VariableId);
-                    var encrypt = mode == "AllValues" || variable?.IsSecret == true;
-                    if (!encrypt)
+                    foreach (var value in storage.Values)
                     {
-                        value.IsEncrypted = false;
-                        value.EncryptedValue = null;
-                        continue;
+                        var variable = storage.Variables.FirstOrDefault(v => v.Id == value.VariableId);
+                        var encrypt = mode == "AllValues" || variable?.IsSecret == true;
+                        if (!encrypt)
+                        {
+                            value.IsEncrypted = false;
+                            value.EncryptedValue = null;
+                            continue;
+                        }
+                        value.EncryptedValue = CryptoService.EncryptString(value.Value ?? string.Empty, key);
+                        value.Value = null;
+                        value.IsEncrypted = true;
                     }
-                    value.EncryptedValue = CryptoService.EncryptString(value.Value ?? string.Empty, key);
-                    value.Value = null;
-                    value.IsEncrypted = true;
+                }
+                finally
+                {
+                    ClearKey(key);
                 }
             }
             else
@@ -588,6 +915,7 @@ namespace EnvSecured.WinForms.Cli
             project.Crypto.Salt = Convert.ToBase64String(salt);
             project.Crypto.Iterations = project.Crypto.Iterations <= 0 ? 300000 : project.Crypto.Iterations;
             var key = CryptoService.DeriveKey(password, salt, project.Crypto.Iterations);
+            Array.Clear(salt, 0, salt.Length);
             project.Crypto.KeyCheck = CryptoService.EncryptString("EnvSecuredVaultKeyCheck:v1", key);
             return key;
         }
@@ -616,14 +944,34 @@ namespace EnvSecured.WinForms.Cli
         private static string ReadPassword()
         {
             var chars = new List<char>();
-            ConsoleKeyInfo key;
-            while ((key = Console.ReadKey(true)).Key != ConsoleKey.Enter)
+            char[] buffer = null;
+            try
             {
-                if (key.Key == ConsoleKey.Backspace && chars.Count > 0) chars.RemoveAt(chars.Count - 1);
-                else if (!char.IsControl(key.KeyChar)) chars.Add(key.KeyChar);
+                ConsoleKeyInfo key;
+                while ((key = Console.ReadKey(true)).Key != ConsoleKey.Enter)
+                {
+                    if (key.Key == ConsoleKey.Backspace && chars.Count > 0) chars.RemoveAt(chars.Count - 1);
+                    else if (!char.IsControl(key.KeyChar)) chars.Add(key.KeyChar);
+                }
+                Console.Error.WriteLine();
+
+                buffer = chars.ToArray();
+                return new string(buffer);
             }
-            Console.Error.WriteLine();
-            return new string(chars.ToArray());
+            finally
+            {
+                if (buffer != null) Array.Clear(buffer, 0, buffer.Length);
+                for (var i = 0; i < chars.Count; i++)
+                {
+                    chars[i] = '\0';
+                }
+                chars.Clear();
+            }
+        }
+
+        private static void ClearKey(byte[] key)
+        {
+            if (key != null) Array.Clear(key, 0, key.Length);
         }
 
         private static void DecryptValues(ProjectModel project, byte[] key)
@@ -664,7 +1012,12 @@ namespace EnvSecured.WinForms.Cli
                 if (equalsIndex <= 0) continue;
                 var key = line.Substring(0, equalsIndex).Trim();
                 var value = line.Substring(equalsIndex + 1).Trim();
-                if ((value.StartsWith("\"") && value.EndsWith("\"")) || (value.StartsWith("'") && value.EndsWith("'"))) value = value.Substring(1, value.Length - 2);
+                if (value.Length >= 2 &&
+                    ((value.StartsWith("\"") && value.EndsWith("\"")) ||
+                    (value.StartsWith("'") && value.EndsWith("'"))))
+                {
+                    value = value.Substring(1, value.Length - 2);
+                }
                 yield return new KeyValuePair<string, string>(key.ToUpperInvariant(), value);
             }
         }
@@ -857,7 +1210,15 @@ namespace EnvSecured.WinForms.Cli
         private static VariableDefinitionModel EnsureVariable(ProjectModel project, string key, bool secret)
         {
             var variable = FindVariable(project, key);
-            if (variable != null) return variable;
+            if (variable != null)
+            {
+                if (secret)
+                {
+                    variable.IsSecret = true;
+                    variable.Type = VariableType.Password;
+                }
+                return variable;
+            }
             var options = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["key"] = key };
             if (secret) options["secret"] = "true";
             AddVariable(project, options);
@@ -869,7 +1230,7 @@ namespace EnvSecured.WinForms.Cli
             var contract = project.Contracts.FirstOrDefault(c => c.VariableId == variableId && c.ServiceId == serviceId);
             if (contract == null)
             {
-                if (!HasGlobalValue(project, variableId))
+                if (!ProjectService.HasGlobalValue(project, variableId))
                 {
                     project.Contracts.Add(new VariableContractModel { Id = ProjectService.NewId(), VariableId = variableId, ServiceId = serviceId, Required = required, SortOrder = project.Contracts.Count * 10 });
                 }
@@ -879,18 +1240,6 @@ namespace EnvSecured.WinForms.Cli
                 contract.Excluded = false;
                 contract.Required = required;
             }
-        }
-
-        private static bool IsVariableUsedByService(ProjectModel project, string variableId, string serviceId)
-        {
-            var contract = project.Contracts.FirstOrDefault(c => c.VariableId == variableId && c.ServiceId == serviceId);
-            if (contract != null) return !contract.Excluded;
-            return HasGlobalValue(project, variableId);
-        }
-
-        private static bool HasGlobalValue(ProjectModel project, string variableId)
-        {
-            return project.Values.Any(v => v.VariableId == variableId && v.Scope == ValueScope.Global && v.ServiceId == null && v.EnvironmentId == null);
         }
 
         private static void InferTarget(ProjectModel project, string path, Dictionary<string, string> options)
@@ -910,6 +1259,7 @@ namespace EnvSecured.WinForms.Cli
         private static string VariableKey(ProjectModel project, string id) => string.IsNullOrWhiteSpace(id) ? string.Empty : project.Variables.FirstOrDefault(v => v.Id == id)?.Key ?? id;
         private static string ServiceName(ProjectModel project, string id) => string.IsNullOrWhiteSpace(id) ? string.Empty : project.Services.FirstOrDefault(s => s.Id == id)?.Name ?? id;
         private static string EnvironmentName(ProjectModel project, string id) => string.IsNullOrWhiteSpace(id) ? string.Empty : project.Environments.FirstOrDefault(e => e.Id == id)?.Name ?? id;
+        private static string CliDisplayValue(VariableDefinitionModel variable, string value, bool showSecrets) => variable?.IsSecret == true && !showSecrets ? "********" : value;
         private static bool Same(string a, string b) => string.Equals(a, b, StringComparison.OrdinalIgnoreCase);
         private static bool SameNullable(string a, string b) => string.Equals(a ?? string.Empty, b ?? string.Empty, StringComparison.OrdinalIgnoreCase);
         private static string Get(Dictionary<string, string> options, string key) => options.TryGetValue(key, out var value) ? value : null;
@@ -962,6 +1312,29 @@ namespace EnvSecured.WinForms.Cli
         private static string EncryptionMode(ProjectModel project) { var mode = project.Settings?.EncryptionMode; if (!string.IsNullOrWhiteSpace(mode)) return NormalizeEncryptionMode(mode); return project.Settings?.EncryptAllValues == true ? "AllValues" : "Open"; }
         private static string NormalizeEncryptionMode(string value) { value = (value ?? "Open").Trim().ToLowerInvariant(); if (value == "wholejson" || value == "whole-json") return "WholeJson"; if (value == "allvalues" || value == "all-values") return "AllValues"; if (value == "secretsonly" || value == "secrets-only") return "SecretsOnly"; return "Open"; }
         private static void AutoAssignVariableToMatchingServices(ProjectModel project, VariableDefinitionModel variable) { foreach (var service in project.Services.Where(s => !string.IsNullOrWhiteSpace(s.DefaultPrefix) && variable.Key.StartsWith(s.DefaultPrefix.Trim(), StringComparison.OrdinalIgnoreCase))) EnsureContract(project, variable.Id, service.Id, true); }
+        private static VariableType ParseVariableType(string value)
+        {
+            if (string.IsNullOrWhiteSpace(value)) return VariableType.String;
+            return (VariableType)Enum.Parse(typeof(VariableType), value, true);
+        }
+
+        private static void ApplyServiceExportNames(ServiceModel service, Dictionary<string, string> options)
+        {
+            if (options.ContainsKey("config-name")) service.ConfigName = options["config-name"];
+            if (options.ContainsKey("toml-name")) service.TomlName = options["toml-name"];
+            if (options.ContainsKey("yaml-name")) service.YamlName = options["yaml-name"];
+            if (options.ContainsKey("xml-name")) service.XmlName = options["xml-name"];
+            if (options.ContainsKey("json-name")) service.JsonName = options["json-name"];
+        }
+
+        private static void ApplyEnvironmentExportNames(EnvironmentModel env, Dictionary<string, string> options)
+        {
+            if (options.ContainsKey("config-name")) env.ConfigName = options["config-name"];
+            if (options.ContainsKey("toml-name")) env.TomlName = options["toml-name"];
+            if (options.ContainsKey("yaml-name")) env.YamlName = options["yaml-name"];
+            if (options.ContainsKey("xml-name")) env.XmlName = options["xml-name"];
+            if (options.ContainsKey("json-name")) env.JsonName = options["json-name"];
+        }
 
         private static Dictionary<string, string> ParseOptions(string[] args)
         {
@@ -987,20 +1360,34 @@ namespace EnvSecured.WinForms.Cli
             Console.WriteLine();
             Console.WriteLine("Project commands:");
             Console.WriteLine("  new --file <path> --name <name>");
+            Console.WriteLine("  save-as --file <path> --to <path> [--overwrite true] [--delete-source true]");
+            Console.WriteLine("  project --file <path> [--name name] [--id id] [--description text]");
             Console.WriteLine("  info|validate --file <path>");
-            Console.WriteLine("  list --file <path> --what variables|values|services|envs");
+            Console.WriteLine("  list --file <path> --what variables|values|services|envs [--show-secrets]");
+            Console.WriteLine("  --register-association | --unregister-association");
+            Console.WriteLine("  --check-update | --download-update");
+            Console.WriteLine("    --check-update exit codes: 0 no update, 10 update available, 2 check failed");
             Console.WriteLine();
             Console.WriteLine("Editing:");
-            Console.WriteLine("  add-service --file <path> --name backend [--prefix BACKEND_] [--folder backend]");
+            Console.WriteLine("  add-service --file <path> --name backend [--prefix BACKEND_] [--folder backend] [--strict-contracts]");
+            Console.WriteLine("  edit-service --file <path> --service backend [--name name] [--display text] [--folder path] [--prefix PREFIX_] [--active true|false] [--shared-without-contract true|false]");
+            Console.WriteLine("  delete-service --file <path> --service backend");
             Console.WriteLine("  add-env --file <path> --name dev");
-            Console.WriteLine("  add-var --file <path> --key DATABASE_HOST [--secret] [--allow-null] [--allow-blank]");
+            Console.WriteLine("  edit-env --file <path> --env dev [--name name] [--display text] [--active true|false]");
+            Console.WriteLine("  delete-env --file <path> --env dev");
+            Console.WriteLine("  add-var --file <path> --key DATABASE_HOST [--secret] [--allow-shared-secret] [--allow-null] [--allow-blank]");
+            Console.WriteLine("  edit-var --file <path> --key KEY [--new-key KEY] [--secret true|false] [--allow-shared-secret true|false] [--allow-null true|false] [--allow-blank true|false] [--active true|false]");
+            Console.WriteLine("  delete-var --file <path> --key KEY");
             Console.WriteLine("  set --file <path> --key KEY --value VALUE [--service backend|global] [--env dev|global] [--secret]");
             Console.WriteLine("  delete-value --file <path> --key KEY [--service backend|global] [--env dev|global]");
             Console.WriteLine("  use|unuse --file <path> --key KEY --service backend [--optional]");
+            Console.WriteLine("  auto-assign --file <path> [--key KEY]");
+            Console.WriteLine("  compact-values --file <path>");
             Console.WriteLine();
             Console.WriteLine("Import/export:");
             Console.WriteLine("  import --file <path> --input a.env[;b.env] [--service backend] [--env dev] [--secret] [--optional]");
             Console.WriteLine("  settings --file <path> [--output-root C:\\project] [--format CONFIG|TOML|YAML|XML|JSON] [--ext .env] [--single-file true|false] [--single-file-mask {project_name}{.ext}] [--cli-export-password true|false] [--encryption open|secrets-only|all-values|whole-json]");
+            Console.WriteLine("  export-target --file <path> [--all] [--service backend|global] [--env dev|global] [--enabled true|false]");
             Console.WriteLine("  export --file <path> [--all] [--service backend|global|*] [--env dev|global|*] [--output-root C:\\project] [--format CONFIG|TOML|YAML|XML|JSON] [--ext .env] [--single-file true|false] [--single-file-mask {project_name}{.ext}] [--global-mask mask] [--env-mask mask] [--service-mask mask] [--service-env-mask mask]");
             Console.WriteLine();
             Console.WriteLine("Encrypted projects: pass --password <pwd> or ENVSECURED_PASSWORD.");

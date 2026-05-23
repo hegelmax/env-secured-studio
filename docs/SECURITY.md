@@ -40,14 +40,22 @@ Moving the project vault to another machine or another Windows account does not 
 
 ## CLI Export Password Policy
 
-Projects can require CLI export commands to receive an explicit password through:
+By default, CLI export commands receive an explicit password through:
 
 ```text
 --password
 ENVSECURED_PASSWORD
 ```
 
-If the protected policy block is absent, EnvSecured Studio denies passwordless CLI export by default.
+Projects store a plaintext policy flag for whether CLI export requires a password. This policy is not secret; it exists so the CLI can decide whether to require a password before loading the project.
+
+Missing policy data defaults to requiring a password. Whole-JSON encrypted vaults still require a password before export because all settings, including the policy flag, are inside the encrypted payload.
+
+## Updates
+
+The update checker reads public version metadata from GitHub over HTTPS and can download the matching versioned `bin/EnvSecured_vX.Y.Z.exe` file from the repository. Downloaded update binaries are saved next to the current executable and selected in Explorer; they are not executed automatically.
+
+EnvSecured Studio does not currently verify a release signature or a published checksum. This means update integrity relies on HTTPS transport and trust in the GitHub release source. If stronger supply-chain guarantees are required, verify the release artifact independently before replacing the executable.
 
 ## Operational Notes
 

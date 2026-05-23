@@ -21,7 +21,7 @@ namespace EnvSecured.Core.Rendering
             var environment = project.Environments.Single(e => e.Id == environmentId);
             var effective = new EffectiveConfigService().Build(project, serviceId, environmentId).Where(x => !x.Missing).ToDictionary(x => x.Variable.Id);
             var keys = project.Variables
-                .Where(v => IsVariableUsedByService(project, v.Id, serviceId))
+                .Where(v => ProjectService.IsVariableUsedByService(project, v.Id, serviceId))
                 .OrderBy(v => v.SortOrder)
                 .ThenBy(v => v.Key);
             var lines = new List<string> { Header.TrimEnd() };
@@ -45,7 +45,7 @@ namespace EnvSecured.Core.Rendering
             {
                 var lines = new List<string> { Header.TrimEnd() };
                 var variables = project.Variables
-                    .Where(v => IsVariableUsedByService(project, v.Id, service.Id))
+                    .Where(v => ProjectService.IsVariableUsedByService(project, v.Id, service.Id))
                     .OrderBy(v => v.SortOrder)
                     .ThenBy(v => v.Key);
                 foreach (var variable in variables)
@@ -60,11 +60,5 @@ namespace EnvSecured.Core.Rendering
             }
         }
 
-        private static bool IsVariableUsedByService(ProjectModel project, string variableId, string serviceId)
-        {
-            var contract = project.Contracts.FirstOrDefault(c => c.VariableId == variableId && c.ServiceId == serviceId);
-            if (contract != null) return !contract.Excluded;
-            return project.Values.Any(v => v.VariableId == variableId && v.Scope == ValueScope.Global && v.ServiceId == null && v.EnvironmentId == null);
-        }
     }
 }

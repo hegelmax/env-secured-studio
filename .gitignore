@@ -1,5 +1,6 @@
 # Build output
 src/*/bin/
+tests/*/bin/
 obj/
 artifacts/
 TestResults/

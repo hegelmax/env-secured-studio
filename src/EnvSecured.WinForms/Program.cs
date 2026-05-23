@@ -15,6 +15,63 @@ namespace EnvSecured.WinForms
         [STAThread]
         private static int Main(string[] args)
         {
+            if (args != null && args.Length > 0)
+            {
+                if (string.Equals(args[0], "--register-association", StringComparison.OrdinalIgnoreCase))
+                {
+                    FileAssociationService.Register();
+                    Console.WriteLine(".envs file association registered.");
+                    return 0;
+                }
+
+                if (string.Equals(args[0], "--unregister-association", StringComparison.OrdinalIgnoreCase))
+                {
+                    FileAssociationService.Unregister();
+                    Console.WriteLine(".envs file association removed.");
+                    return 0;
+                }
+
+                if (string.Equals(args[0], "--check-update", StringComparison.OrdinalIgnoreCase))
+                {
+                    try
+                    {
+                        var info = UpdateService.Check(15000);
+                        Console.WriteLine($"Current: {info.CurrentVersion}");
+                        Console.WriteLine($"Latest: {info.LatestVersion}");
+                        Console.WriteLine(info.UpdateAvailable ? "Update available." : "No update available.");
+                        Console.WriteLine($"Download: {info.ReleasePageUrl}");
+                        return info.UpdateAvailable ? 10 : 0;
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.Error.WriteLine("Update check failed: " + ex.Message);
+                        return 2;
+                    }
+                }
+
+                if (string.Equals(args[0], "--download-update", StringComparison.OrdinalIgnoreCase))
+                {
+                    try
+                    {
+                        var info = UpdateService.Check(15000);
+                        if (!info.UpdateAvailable)
+                        {
+                            Console.WriteLine($"No update available. Current {info.CurrentVersion}, latest {info.LatestVersion}.");
+                            return 0;
+                        }
+
+                        Console.WriteLine("Downloading " + info.DownloadUrl);
+                        Console.WriteLine("Saved: " + UpdateService.Download(info));
+                        return 0;
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.Error.WriteLine("Update download failed: " + ex.Message);
+                        return 2;
+                    }
+                }
+            }
+
             if (CliRunner.IsCliRequest(args))
             {
                 return CliRunner.Run(args);
@@ -25,7 +82,10 @@ namespace EnvSecured.WinForms
                 FreeConsole();
                 Application.EnableVisualStyles();
                 Application.SetCompatibleTextRenderingDefault(false);
-                Application.Run(new MainForm());
+                var initialFilePath = args != null && args.Length > 0 && FileAssociationService.IsVaultFile(args[0]) ? args[0] : null;
+                FileAssociationService.EnsureInteractive(null);
+                UpdateService.CheckInteractive(null);
+                Application.Run(new MainForm(initialFilePath));
                 return 0;
             }
             catch (Exception ex)

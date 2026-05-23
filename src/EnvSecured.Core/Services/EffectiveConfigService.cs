@@ -10,12 +10,14 @@ namespace EnvSecured.Core.Services
         public VariableDefinitionModel Variable { get; set; }
         public string Value { get; set; }
         public ValueScope? SourceScope { get; set; }
+        public string SourceServiceId { get; set; }
+        public string SourceEnvironmentId { get; set; }
         public bool Missing => SourceScope == null;
     }
 
     public sealed class EffectiveConfigService
     {
-        private static readonly Regex TokenRegex = new Regex(@"\$\{(?<key>[A-Za-z_][A-Za-z0-9_]*)\}|\{(?<key>[A-Za-z_][A-Za-z0-9_]*)\}", RegexOptions.Compiled);
+        private static readonly Regex TokenRegex = new Regex(@"\$\{(?<key>[A-Za-z_][A-Za-z0-9_]*)\}", RegexOptions.Compiled);
 
         public IReadOnlyList<EffectiveValue> Build(ProjectModel project, string serviceId, string environmentId)
         {
@@ -23,7 +25,7 @@ namespace EnvSecured.Core.Services
                 .Where(v => v.IsActive)
                 .OrderBy(v => v.SortOrder)
                 .ThenBy(v => v.Key)
-                .Select(v => BuildOne(project, v, serviceId, environmentId))
+                .Select(v => BuildRawValue(project, v, serviceId, environmentId))
                 .ToList();
             var valuesByKey = values
                 .Where(v => !v.Missing)
@@ -61,15 +63,11 @@ namespace EnvSecured.Core.Services
             });
         }
 
-        private static EffectiveValue BuildOne(ProjectModel project, VariableDefinitionModel variable, string serviceId, string environmentId)
+        public static EffectiveValue BuildRawValue(ProjectModel project, VariableDefinitionModel variable, string serviceId, string environmentId)
         {
             VariableValueModel selected = null;
-            foreach (var scope in new[] { ValueScope.Global, ValueScope.Environment, ValueScope.Service, ValueScope.ServiceEnvironment })
+            foreach (var candidate in BuildValuePrecedence(project, variable.Id, serviceId, environmentId))
             {
-                var candidate = project.Values.LastOrDefault(v =>
-                    v.VariableId == variable.Id &&
-                    v.Scope == scope &&
-                    Matches(v, scope, serviceId, environmentId));
                 if (candidate != null)
                 {
                     selected = candidate;
@@ -80,16 +78,40 @@ namespace EnvSecured.Core.Services
             {
                 Variable = variable,
                 Value = selected?.Value,
-                SourceScope = selected?.Scope
+                SourceScope = selected?.Scope,
+                SourceServiceId = selected?.ServiceId,
+                SourceEnvironmentId = selected?.EnvironmentId
             };
         }
 
-        private static bool Matches(VariableValueModel value, ValueScope scope, string serviceId, string environmentId)
+        private static IEnumerable<VariableValueModel> BuildValuePrecedence(ProjectModel project, string variableId, string serviceId, string environmentId)
         {
-            if (scope == ValueScope.Global) return value.ServiceId == null && value.EnvironmentId == null;
-            if (scope == ValueScope.Environment) return value.ServiceId == null && value.EnvironmentId == environmentId;
-            if (scope == ValueScope.Service) return value.ServiceId == serviceId && value.EnvironmentId == null;
-            return value.ServiceId == serviceId && value.EnvironmentId == environmentId;
+            yield return FindLastValue(project, variableId, ValueScope.Global, null, null);
+            yield return FindLastValue(project, variableId, ValueScope.Environment, null, environmentId);
+
+            if (!string.IsNullOrWhiteSpace(serviceId))
+            {
+                foreach (var service in project.Services
+                    .Where(s => s.Id != serviceId)
+                    .OrderBy(s => s.SortOrder)
+                    .ThenBy(s => s.Name))
+                {
+                    yield return FindLastValue(project, variableId, ValueScope.Service, service.Id, null);
+                    yield return FindLastValue(project, variableId, ValueScope.ServiceEnvironment, service.Id, environmentId);
+                }
+
+                yield return FindLastValue(project, variableId, ValueScope.Service, serviceId, null);
+                yield return FindLastValue(project, variableId, ValueScope.ServiceEnvironment, serviceId, environmentId);
+            }
+        }
+
+        private static VariableValueModel FindLastValue(ProjectModel project, string variableId, ValueScope scope, string serviceId, string environmentId)
+        {
+            return project.Values.LastOrDefault(v =>
+                v.VariableId == variableId &&
+                v.Scope == scope &&
+                v.ServiceId == serviceId &&
+                v.EnvironmentId == environmentId);
         }
     }
 }

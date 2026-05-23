@@ -33,6 +33,7 @@ namespace EnvSecured.Core.Models
         public bool OutputStructuredSingleFile { get; set; }
         public string OutputStructuredSingleFileMask { get; set; } = @"{project_name}{.ext}";
         public List<OutputTargetSetting> OutputTargets { get; set; } = new List<OutputTargetSetting>();
+        public bool CliExportPasswordRequiredPolicy { get; set; } = true;
         public EncryptedPayload CliExportPasswordRequiredEncrypted { get; set; }
         [ScriptIgnore]
         public bool CliExportPasswordRequired { get; set; } = true;

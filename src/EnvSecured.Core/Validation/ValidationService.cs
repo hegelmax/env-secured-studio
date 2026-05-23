@@ -8,7 +8,7 @@ namespace EnvSecured.Core.Validation
 {
     public sealed class ValidationService
     {
-        private static readonly Regex TokenRegex = new Regex(@"\$\{(?<key>[A-Za-z_][A-Za-z0-9_]*)\}|\{(?<key>[A-Za-z_][A-Za-z0-9_]*)\}", RegexOptions.Compiled);
+        private static readonly Regex TokenRegex = new Regex(@"\$\{(?<key>[A-Za-z_][A-Za-z0-9_]*)\}", RegexOptions.Compiled);
 
         public IReadOnlyList<ValidationResult> Validate(ProjectModel project, string serviceId = null, string environmentId = null)
         {
@@ -40,6 +40,7 @@ namespace EnvSecured.Core.Validation
                     results.Add(Error("MISSING_VALUE_ENVIRONMENT", "Value references a missing environment.", value.VariableId, value.ServiceId, value.EnvironmentId));
                 }
             }
+            ValidateDuplicateValues(project, results);
             ValidateRepeatedEnvironmentSecrets(project, results);
 
             if (serviceId != null && environmentId != null)
@@ -88,9 +89,12 @@ namespace EnvSecured.Core.Validation
                 .Where(v => v.IsActive)
                 .OrderBy(v => v.SortOrder)
                 .ThenBy(v => v.Key)
-                .Select(v => BuildRawEffective(project, v, serviceId, environmentId))
+                .Select(v => EffectiveConfigService.BuildRawValue(project, v, serviceId, environmentId))
                 .ToDictionary(x => x.Variable.Key);
-            foreach (var item in effective.Values.Where(x => !x.Missing && !string.IsNullOrEmpty(x.Value)))
+            foreach (var item in effective.Values.Where(x =>
+                !x.Missing &&
+                !string.IsNullOrEmpty(x.Value) &&
+                HasExplicitContract(project, serviceId, x.Variable.Id)))
             {
                 foreach (var token in ExtractTokens(item.Value).Distinct())
                 {
@@ -103,6 +107,24 @@ namespace EnvSecured.Core.Validation
                     if (!effective.TryGetValue(token, out var referenced) || referenced.Missing || referenced.Value == null)
                     {
                         results.Add(Error("INTERPOLATION_VALUE_MISSING", $"Interpolated variable '{token}' has no effective value.", item.Variable.Id, serviceId, environmentId));
+                        continue;
+                    }
+
+                    var referencedVariable = project.Variables.First(v => v.Key == token);
+                    if (referencedVariable.Id != item.Variable.Id &&
+                        IsServiceScoped(referenced) &&
+                        !HasExplicitContract(project, serviceId, referencedVariable.Id))
+                    {
+                        var service = project.Services.FirstOrDefault(s => s.Id == serviceId);
+                        var message = $"Interpolated variable '{token}' has no explicit contract for this service.";
+                        if (service?.AllowSharedVariablesWithoutContract == false)
+                        {
+                            results.Add(Error("INTERPOLATION_CONTRACT_MISSING", message, item.Variable.Id, serviceId, environmentId));
+                        }
+                        else
+                        {
+                            results.Add(Warning("INTERPOLATION_CONTRACT_MISSING", message, item.Variable.Id, serviceId, environmentId));
+                        }
                     }
                 }
             }
@@ -123,8 +145,8 @@ namespace EnvSecured.Core.Validation
                     v.Scope == ValueScope.Global &&
                     v.EnvironmentId == null &&
                     v.ServiceId == null &&
-                    !string.IsNullOrEmpty(v.Value));
-                if (globalValue != null)
+                    HasStoredValue(v));
+                if (globalValue != null && !variable.AllowSharedSecret)
                 {
                     results.Add(Warning(
                         "SECRET_GLOBAL_FOR_ALL_ENVIRONMENTS",
@@ -133,6 +155,8 @@ namespace EnvSecured.Core.Validation
                         null,
                         null));
                 }
+
+                if (variable.AllowSharedSecret) continue;
 
                 var environmentValues = project.Values
                     .Where(v =>
@@ -156,38 +180,41 @@ namespace EnvSecured.Core.Validation
                         group.Key.ServiceId,
                         null));
                 }
+
             }
         }
 
-        private static EffectiveValue BuildRawEffective(ProjectModel project, VariableDefinitionModel variable, string serviceId, string environmentId)
+        private static void ValidateDuplicateValues(ProjectModel project, List<ValidationResult> results)
         {
-            VariableValueModel selected = null;
-            foreach (var scope in new[] { ValueScope.Global, ValueScope.Environment, ValueScope.Service, ValueScope.ServiceEnvironment })
+            foreach (var group in project.Values
+                .GroupBy(v => new { v.VariableId, v.Scope, v.ServiceId, v.EnvironmentId })
+                .Where(g => g.Count() > 1))
             {
-                var candidate = project.Values.LastOrDefault(v =>
-                    v.VariableId == variable.Id &&
-                    v.Scope == scope &&
-                    Matches(v, scope, serviceId, environmentId));
-                if (candidate != null)
-                {
-                    selected = candidate;
-                }
+                results.Add(Warning(
+                    "DUPLICATE_SCOPED_VALUE",
+                    $"Multiple values exist for the same variable and scope. The last one wins; remove stale duplicates.",
+                    group.Key.VariableId,
+                    group.Key.ServiceId,
+                    group.Key.EnvironmentId));
             }
-
-            return new EffectiveValue
-            {
-                Variable = variable,
-                Value = selected?.Value,
-                SourceScope = selected?.Scope
-            };
         }
 
-        private static bool Matches(VariableValueModel value, ValueScope scope, string serviceId, string environmentId)
+        private static bool HasStoredValue(VariableValueModel value)
         {
-            if (scope == ValueScope.Global) return value.ServiceId == null && value.EnvironmentId == null;
-            if (scope == ValueScope.Environment) return value.ServiceId == null && value.EnvironmentId == environmentId;
-            if (scope == ValueScope.Service) return value.ServiceId == serviceId && value.EnvironmentId == null;
-            return value.ServiceId == serviceId && value.EnvironmentId == environmentId;
+            return !string.IsNullOrEmpty(value.Value) || value.EncryptedValue != null;
+        }
+
+        private static bool HasExplicitContract(ProjectModel project, string serviceId, string variableId)
+        {
+            return project.Contracts.Any(c =>
+                c.ServiceId == serviceId &&
+                c.VariableId == variableId &&
+                !c.Excluded);
+        }
+
+        private static bool IsServiceScoped(EffectiveValue value)
+        {
+            return value.SourceScope == ValueScope.Service || value.SourceScope == ValueScope.ServiceEnvironment;
         }
 
         private static IEnumerable<string> ExtractTokens(string value)
@@ -207,22 +234,23 @@ namespace EnvSecured.Core.Validation
                     pair => ExtractTokens(pair.Value.Value).Where(effective.ContainsKey).Distinct().ToList());
             var visited = new HashSet<string>();
             var stack = new List<string>();
+            var stackIndex = new Dictionary<string, int>();
             var emitted = new HashSet<string>();
 
             foreach (var key in graph.Keys)
             {
-                foreach (var cycle in FindCyclesFrom(key, graph, visited, stack, emitted))
+                foreach (var cycle in FindCyclesFrom(key, graph, visited, stack, stackIndex, emitted))
                 {
                     yield return cycle;
                 }
             }
         }
 
-        private static IEnumerable<List<string>> FindCyclesFrom(string key, Dictionary<string, List<string>> graph, HashSet<string> visited, List<string> stack, HashSet<string> emitted)
+        private static IEnumerable<List<string>> FindCyclesFrom(string key, Dictionary<string, List<string>> graph, HashSet<string> visited, List<string> stack, Dictionary<string, int> stackIndex, HashSet<string> emitted)
         {
-            if (stack.Contains(key))
+            if (stackIndex.TryGetValue(key, out var cycleStart))
             {
-                var cycle = stack.Skip(stack.IndexOf(key)).Concat(new[] { key }).ToList();
+                var cycle = stack.Skip(cycleStart).Concat(new[] { key }).ToList();
                 var signature = string.Join("|", cycle.OrderBy(x => x));
                 if (emitted.Add(signature))
                 {
@@ -232,18 +260,20 @@ namespace EnvSecured.Core.Validation
             }
 
             if (!visited.Add(key)) yield break;
+            stackIndex[key] = stack.Count;
             stack.Add(key);
             if (graph.TryGetValue(key, out var next))
             {
                 foreach (var child in next)
                 {
-                    foreach (var cycle in FindCyclesFrom(child, graph, visited, stack, emitted))
+                    foreach (var cycle in FindCyclesFrom(child, graph, visited, stack, stackIndex, emitted))
                     {
                         yield return cycle;
                     }
                 }
             }
             stack.RemoveAt(stack.Count - 1);
+            stackIndex.Remove(key);
         }
 
         private static void AddDuplicates(List<ValidationResult> results, IEnumerable<string> values, string code, string message)

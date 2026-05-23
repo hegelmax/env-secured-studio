@@ -1,8 +1,10 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Drawing;
 using System.IO;
 using System.Linq;
+using System.Reflection;
 using System.Security.Cryptography;
 using System.Text;
 using System.Web.Script.Serialization;
@@ -81,7 +83,7 @@ namespace EnvSecured.WinForms.Forms
         };
         private StatusStrip status;
 
-        public MainForm()
+        public MainForm(string initialFilePath = null)
         {
             Text = "EnvSecured Studio";
             Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath);
@@ -91,6 +93,24 @@ namespace EnvSecured.WinForms.Forms
             ShowInTaskbar = true;
             BuildUi();
             RestoreWindowBounds();
+            OpenInitialProjectOrStart(initialFilePath);
+        }
+
+        private void OpenInitialProjectOrStart(string initialFilePath)
+        {
+            if (!string.IsNullOrWhiteSpace(initialFilePath))
+            {
+                try
+                {
+                    OpenProjectFile(initialFilePath);
+                    return;
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show(this, $"Cannot open project.\r\n\r\n{ex.Message}", "Open Project", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                }
+            }
+
             OpenLastProjectOrStart();
         }
 
@@ -147,10 +167,27 @@ namespace EnvSecured.WinForms.Forms
                         return;
                     }
                 }
+                else if (result == DialogResult.No)
+                {
+                    DeleteRecoveryBackupQuietly();
+                }
             }
 
             SaveWindowBounds();
+            ClearVaultKey();
             base.OnFormClosing(e);
+        }
+
+        private void DeleteRecoveryBackupQuietly()
+        {
+            if (string.IsNullOrWhiteSpace(currentFilePath)) return;
+            try
+            {
+                vaultFileService.DeleteRecoveryBackup(currentFilePath);
+            }
+            catch
+            {
+            }
         }
 
         private void RestoreWindowBounds()
@@ -224,7 +261,7 @@ namespace EnvSecured.WinForms.Forms
             file.DropDownItems.Add("Save As", null, (s, e) => SaveProjectAs());
             file.DropDownItems.Add("Exit", null, (s, e) => Close());
             menu.Items.Add(file);
-            menu.Items.Add(new ToolStripMenuItem("Help", null, new ToolStripMenuItem("About", null, (s, e) => MessageBox.Show(this, "EnvSecured Studio", "About"))));
+            menu.Items.Add(new ToolStripMenuItem("Help", null, new ToolStripMenuItem("About", null, (s, e) => ShowAboutDialog())));
 
             commandPanel = new FlowLayoutPanel { Dock = DockStyle.Top, Height = 38, Padding = new Padding(4), WrapContents = false };
             AddCommand(commandPanel, "New Project", NewProject);
@@ -268,11 +305,36 @@ namespace EnvSecured.WinForms.Forms
             return button;
         }
 
+        private void ClearVaultKey()
+        {
+            if (vaultKey == null) return;
+            ClearKey(vaultKey);
+            vaultKey = null;
+        }
+
+        private static void ClearKey(byte[] key)
+        {
+            if (key != null)
+            {
+                Array.Clear(key, 0, key.Length);
+            }
+        }
+
+        private void SetVaultKey(byte[] key)
+        {
+            if (!ReferenceEquals(vaultKey, key))
+            {
+                ClearVaultKey();
+            }
+
+            vaultKey = key;
+        }
+
         private void RenderNoProjectView()
         {
             project = null;
             currentFilePath = null;
-            vaultKey = null;
+            ClearVaultKey();
             modified = false;
             recoveryBackupWarningShown = false;
             Text = "EnvSecured Studio";
@@ -293,19 +355,21 @@ namespace EnvSecured.WinForms.Forms
             };
             center.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
             center.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
-            center.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
+            center.RowStyles.Add(new RowStyle(SizeType.Absolute, 48));
             center.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
             center.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
             center.Controls.Add(new Label { Text = "No project is open", Dock = DockStyle.Fill, Font = new Font(Font.FontFamily, 12, FontStyle.Bold), TextAlign = ContentAlignment.MiddleLeft }, 0, 0);
             center.Controls.Add(new Label { Text = "Create a new EnvSecured Studio project or open an existing vault file.", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft }, 0, 1);
 
-            var buttons = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.LeftToRight, WrapContents = false, Padding = new Padding(0, 5, 0, 0) };
+            var buttons = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.LeftToRight, WrapContents = false, Padding = new Padding(0, 6, 0, 6) };
             var newButton = AddCommand(buttons, "New Project", NewProject);
             var openButton = AddCommand(buttons, "Open", OpenProject);
             newButton.Width = 120;
             openButton.Width = 120;
-            newButton.Height = 30;
-            openButton.Height = 30;
+            newButton.Height = 28;
+            openButton.Height = 28;
+            newButton.Margin = new Padding(0, 0, 6, 0);
+            openButton.Margin = new Padding(0);
             center.Controls.Add(buttons, 0, 2);
 
             center.Controls.Add(new Label { Text = "Recent projects", Dock = DockStyle.Fill, Font = new Font(Font, FontStyle.Bold), TextAlign = ContentAlignment.MiddleLeft }, 0, 3);
@@ -336,7 +400,7 @@ namespace EnvSecured.WinForms.Forms
             if (string.IsNullOrWhiteSpace(name)) name = "untitled-project";
             project = projectService.CreateProject(name, Slug(name));
             currentFilePath = null;
-            vaultKey = null;
+            ClearVaultKey();
             modified = true;
             currentView = "Variables";
             RefreshNavigation();
@@ -346,7 +410,7 @@ namespace EnvSecured.WinForms.Forms
 
         private void OpenProject()
         {
-            using (var dialog = new OpenFileDialog { Filter = "EnvSecured Studio vault (*.json)|*.json|All files (*.*)|*.*" })
+            using (var dialog = new OpenFileDialog { Filter = "EnvSecured Studio vault (*.envs)|*.envs|All files (*.*)|*.*" })
             {
                 if (dialog.ShowDialog(this) != DialogResult.OK) return;
                 OpenProjectFile(dialog.FileName);
@@ -419,6 +483,8 @@ namespace EnvSecured.WinForms.Forms
 
         private void SaveProject()
         {
+            ApplyCurrentViewEditsBeforeSave();
+
             if (currentFilePath == null)
             {
                 SaveProjectAs();
@@ -437,12 +503,25 @@ namespace EnvSecured.WinForms.Forms
 
         private void SaveProjectAs()
         {
-            using (var dialog = new SaveFileDialog { Filter = "EnvSecured Studio vault (*.json)|*.json|All files (*.*)|*.*", FileName = "envsecured.vault.json" })
+            using (var dialog = new SaveFileDialog { Filter = "EnvSecured Studio vault (*.envs)|*.envs|All files (*.*)|*.*", FileName = "envsecured.envs", DefaultExt = "envs", AddExtension = true })
             {
                 if (dialog.ShowDialog(this) != DialogResult.OK) return;
                 currentFilePath = dialog.FileName;
                 SaveProject();
                 recentProjectsService.Add(currentFilePath);
+            }
+        }
+
+        private void ApplyCurrentViewEditsBeforeSave()
+        {
+            if (project == null) return;
+            if (currentView == "Project")
+            {
+                ApplyProjectSettingsFromView();
+            }
+            else if (currentView == "Export")
+            {
+                ApplyExportSettingsFromView(false);
             }
         }
 
@@ -487,17 +566,10 @@ namespace EnvSecured.WinForms.Forms
             var buttons = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false };
             AddCommand(buttons, "Apply", () =>
             {
-                var nameBox = contentPanel.Controls.Find("ProjectNameBox", true).FirstOrDefault() as TextBox;
-                var descriptionBox = contentPanel.Controls.Find("ProjectDescriptionBox", true).FirstOrDefault() as TextBox;
-                var encryptionCombo = contentPanel.Controls.Find("ProjectEncryptionCombo", true).FirstOrDefault() as ComboBox;
-                var cliExportPasswordBox = contentPanel.Controls.Find("CliExportPasswordRequiredBox", true).FirstOrDefault() as CheckBox;
-                if (nameBox == null || encryptionCombo == null) return;
-
-                project.ProjectName = string.IsNullOrWhiteSpace(nameBox.Text) ? project.ProjectName : nameBox.Text.Trim();
-                project.Description = descriptionBox?.Text;
-                SetProjectEncryptionMode(Convert.ToString(encryptionCombo.SelectedItem));
-                project.Settings.CliExportPasswordRequired = cliExportPasswordBox?.Checked == true;
-                Changed();
+                if (ApplyProjectSettingsFromView())
+                {
+                    Changed();
+                }
             });
             buttons.Controls.Add(new Label { Text = "Project Properties", AutoSize = true, Padding = new Padding(12, 7, 0, 0), Font = new Font(Font, FontStyle.Bold) });
 
@@ -532,6 +604,153 @@ namespace EnvSecured.WinForms.Forms
             contentPanel.Controls.Add(root);
         }
 
+        private bool ApplyProjectSettingsFromView()
+        {
+            var nameBox = contentPanel.Controls.Find("ProjectNameBox", true).FirstOrDefault() as TextBox;
+            var descriptionBox = contentPanel.Controls.Find("ProjectDescriptionBox", true).FirstOrDefault() as TextBox;
+            var encryptionCombo = contentPanel.Controls.Find("ProjectEncryptionCombo", true).FirstOrDefault() as ComboBox;
+            var cliExportPasswordBox = contentPanel.Controls.Find("CliExportPasswordRequiredBox", true).FirstOrDefault() as CheckBox;
+            if (nameBox == null || encryptionCombo == null) return false;
+
+            project.Settings = project.Settings ?? new ProjectSettings();
+            project.ProjectName = string.IsNullOrWhiteSpace(nameBox.Text) ? project.ProjectName : nameBox.Text.Trim();
+            project.Description = descriptionBox?.Text;
+            SetProjectEncryptionMode(Convert.ToString(encryptionCombo.SelectedItem));
+            project.Settings.CliExportPasswordRequired = cliExportPasswordBox?.Checked == true;
+            project.Settings.CliExportPasswordRequiredPolicy = project.Settings.CliExportPasswordRequired;
+            return true;
+        }
+
+        private void ShowAboutDialog()
+        {
+            var assembly = Assembly.GetExecutingAssembly();
+            var product = assembly.GetCustomAttribute<AssemblyProductAttribute>()?.Product
+                ?? "EnvSecured Studio";
+            var version = assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion
+                ?? assembly.GetName().Version?.ToString()
+                ?? "unknown";
+            var copyright = assembly.GetCustomAttribute<AssemblyCopyrightAttribute>()?.Copyright
+                ?? "Maxim Hegel © 2026";
+            var description = assembly.GetCustomAttribute<AssemblyDescriptionAttribute>()?.Description
+                ?? "Windows desktop and CLI tool for managing encrypted service and environment configuration vaults.";
+            const string repositoryUrl = "https://github.com/hegelmax/env-secured-studio";
+
+            using (var dialog = new Form
+            {
+                Text = "About EnvSecured Studio",
+                StartPosition = FormStartPosition.CenterParent,
+                FormBorderStyle = FormBorderStyle.FixedDialog,
+                MaximizeBox = false,
+                MinimizeBox = false,
+                ShowInTaskbar = false,
+                ClientSize = new Size(640, 430)
+            })
+            {
+                var root = new TableLayoutPanel
+                {
+                    Dock = DockStyle.Fill,
+                    ColumnCount = 2,
+                    RowCount = 5,
+                    Padding = new Padding(10)
+                };
+                root.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 42));
+                root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+                root.RowStyles.Add(new RowStyle(SizeType.Absolute, 72));
+                root.RowStyles.Add(new RowStyle(SizeType.Absolute, 88));
+                root.RowStyles.Add(new RowStyle(SizeType.Absolute, 120));
+                root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+                root.RowStyles.Add(new RowStyle(SizeType.Absolute, 36));
+
+                var icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath);
+                root.Controls.Add(new PictureBox
+                {
+                    Dock = DockStyle.Top,
+                    Width = 32,
+                    Height = 32,
+                    Margin = new Padding(0, 12, 8, 0),
+                    SizeMode = PictureBoxSizeMode.CenterImage,
+                    Image = icon?.ToBitmap()
+                }, 0, 0);
+
+                var productBox = new GroupBox { Text = "Product Information", Dock = DockStyle.Fill };
+                var productGrid = BuildAboutGrid(2);
+                productGrid.Controls.Add(new Label { Text = "Product:", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft }, 0, 0);
+                productGrid.Controls.Add(new Label { Text = product, Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft }, 1, 0);
+                productGrid.Controls.Add(new Label { Text = "Version:", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft }, 0, 1);
+                productGrid.Controls.Add(new Label { Text = version, Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft }, 1, 1);
+                productBox.Controls.Add(productGrid);
+                root.Controls.Add(productBox, 1, 0);
+
+                var supportBox = new GroupBox { Text = "Support Information", Dock = DockStyle.Fill };
+                var supportLayout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2, Padding = new Padding(8, 6, 8, 6) };
+                supportLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+                supportLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 24));
+                supportLayout.Controls.Add(new Label
+                {
+                    Text = description,
+                    Dock = DockStyle.Fill,
+                    TextAlign = ContentAlignment.MiddleLeft
+                }, 0, 0);
+                var link = new LinkLabel { Text = repositoryUrl, Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft };
+                link.LinkClicked += (s, e) =>
+                {
+                    try
+                    {
+                        Process.Start(new ProcessStartInfo(repositoryUrl) { UseShellExecute = true });
+                    }
+                    catch (Exception ex)
+                    {
+                        MessageBox.Show(dialog, "Could not open link.\r\n\r\n" + ex.Message, "About", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    }
+                };
+                supportLayout.Controls.Add(link, 0, 1);
+                supportBox.Controls.Add(supportLayout);
+                root.Controls.Add(supportBox, 1, 1);
+
+                var additionalBox = new GroupBox { Text = "Additional Information", Dock = DockStyle.Fill };
+                var additionalGrid = BuildAboutGrid(4);
+                additionalGrid.Controls.Add(new Label { Text = "Executable:", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft }, 0, 0);
+                additionalGrid.Controls.Add(new Label { Text = Application.ExecutablePath, Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft }, 1, 0);
+                additionalGrid.Controls.Add(new Label { Text = "Host name:", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft }, 0, 1);
+                additionalGrid.Controls.Add(new Label { Text = Environment.MachineName, Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft }, 1, 1);
+                additionalGrid.Controls.Add(new Label { Text = "OS version:", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft }, 0, 2);
+                additionalGrid.Controls.Add(new Label { Text = Environment.OSVersion.VersionString, Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft }, 1, 2);
+                additionalGrid.Controls.Add(new Label { Text = ".NET runtime:", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft }, 0, 3);
+                additionalGrid.Controls.Add(new Label { Text = Environment.Version.ToString(), Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft }, 1, 3);
+                additionalBox.Controls.Add(additionalGrid);
+                root.Controls.Add(additionalBox, 1, 2);
+
+                root.Controls.Add(new Label
+                {
+                    Text = copyright + Environment.NewLine + "EnvSecured Studio manages encrypted service and environment configuration vaults for desktop and CLI workflows.",
+                    Dock = DockStyle.Fill,
+                    TextAlign = ContentAlignment.MiddleLeft
+                }, 1, 3);
+
+                var buttons = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.RightToLeft, WrapContents = false, Margin = Padding.Empty };
+                var okButton = new Button { Text = "OK", DialogResult = DialogResult.OK, Width = 90, Height = 26 };
+                buttons.Controls.Add(okButton);
+                root.Controls.Add(buttons, 1, 4);
+
+                dialog.Controls.Add(root);
+                dialog.AcceptButton = okButton;
+                dialog.CancelButton = okButton;
+                dialog.ShowDialog(this);
+            }
+        }
+
+        private TableLayoutPanel BuildAboutGrid(int rows)
+        {
+            var grid = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = rows, Padding = new Padding(8, 8, 8, 6) };
+            grid.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 86));
+            grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            for (var i = 0; i < rows; i++)
+            {
+                grid.RowStyles.Add(new RowStyle(SizeType.Absolute, 22));
+            }
+            return grid;
+        }
+
         private void RenderExportView()
         {
             project.Settings = project.Settings ?? new ProjectSettings();
@@ -541,7 +760,7 @@ namespace EnvSecured.WinForms.Forms
             root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
 
             var buttons = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false };
-            AddCommand(buttons, "Apply", ApplyExportSettingsFromView);
+            AddCommand(buttons, "Apply", () => ApplyExportSettingsFromView());
             AddCommand(buttons, "Render Files", () =>
             {
                 ApplyExportSettingsFromView();
@@ -619,19 +838,119 @@ namespace EnvSecured.WinForms.Forms
 
         private void BrowseOutputRootFolder(TextBox outputRootBox)
         {
+            var selectedPath = ResolveOutputRootFolder(outputRootBox.Text);
             using (var dialog = new FolderBrowserDialog
             {
                 Description = "Select output folder",
                 ShowNewFolderButton = true,
-                SelectedPath = Directory.Exists(outputRootBox.Text) ? outputRootBox.Text : string.Empty
+                SelectedPath = Directory.Exists(selectedPath) ? selectedPath : string.Empty
             })
             {
                 if (dialog.ShowDialog(this) != DialogResult.OK) return;
-                outputRootBox.Text = dialog.SelectedPath;
+                var outputRootPath = ChooseOutputRootPath(dialog.SelectedPath);
+                if (outputRootPath != null) outputRootBox.Text = outputRootPath;
             }
         }
 
-        private void ApplyExportSettingsFromView()
+        private string ChooseOutputRootPath(string selectedPath)
+        {
+            var absolutePath = Path.GetFullPath(selectedPath);
+            var projectFolder = GetProjectFolder();
+            var canUseRelative = !string.IsNullOrWhiteSpace(projectFolder) && AreSamePathRoot(projectFolder, absolutePath);
+            var relativePath = canUseRelative ? MakeRelativeOutputRootFolder(projectFolder, absolutePath) : string.Empty;
+
+            using (var dialog = new Form
+            {
+                Text = "Output Folder Path",
+                StartPosition = FormStartPosition.CenterParent,
+                FormBorderStyle = FormBorderStyle.FixedDialog,
+                MaximizeBox = false,
+                MinimizeBox = false,
+                ShowInTaskbar = false,
+                ClientSize = new Size(680, 190)
+            })
+            {
+                var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 5, Padding = new Padding(12) };
+                layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
+                layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
+                layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
+                layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
+                layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+
+                var relativeCheckBox = new CheckBox
+                {
+                    Text = canUseRelative ? "Save path relative to project file" : "Save path relative to project file (not available)",
+                    Checked = canUseRelative,
+                    Enabled = canUseRelative,
+                    Dock = DockStyle.Fill
+                };
+                var absolutePreview = new TextBox { ReadOnly = true, Dock = DockStyle.Fill, Text = absolutePath };
+                var relativePreview = new TextBox { ReadOnly = true, Dock = DockStyle.Fill, Text = canUseRelative ? relativePath : "Project file and output folder are on different drives." };
+                var selectedPreview = new TextBox { ReadOnly = true, Dock = DockStyle.Fill };
+
+                Action refreshPreview = () => selectedPreview.Text = relativeCheckBox.Checked && canUseRelative ? relativePath : absolutePath;
+                relativeCheckBox.CheckedChanged += (s, e) => refreshPreview();
+                refreshPreview();
+
+                layout.Controls.Add(relativeCheckBox, 0, 0);
+                layout.Controls.Add(BuildLabeledPreview("Absolute:", absolutePreview), 0, 1);
+                layout.Controls.Add(BuildLabeledPreview("Relative:", relativePreview), 0, 2);
+                layout.Controls.Add(BuildLabeledPreview("Will save:", selectedPreview), 0, 3);
+
+                var buttons = new FlowLayoutPanel { Dock = DockStyle.Right, FlowDirection = FlowDirection.RightToLeft, WrapContents = false };
+                var okButton = new Button { Text = "OK", DialogResult = DialogResult.OK, Width = 90, Height = 26 };
+                var cancelButton = new Button { Text = "Cancel", DialogResult = DialogResult.Cancel, Width = 90, Height = 26 };
+                buttons.Controls.Add(okButton);
+                buttons.Controls.Add(cancelButton);
+                layout.Controls.Add(buttons, 0, 4);
+                dialog.Controls.Add(layout);
+                dialog.AcceptButton = okButton;
+                dialog.CancelButton = cancelButton;
+
+                return dialog.ShowDialog(this) == DialogResult.OK ? selectedPreview.Text : null;
+            }
+        }
+
+        private static Control BuildLabeledPreview(string labelText, TextBox preview)
+        {
+            var panel = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1, Margin = Padding.Empty };
+            panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 82));
+            panel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            panel.Controls.Add(new Label { Text = labelText, Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft }, 0, 0);
+            panel.Controls.Add(preview, 1, 0);
+            return panel;
+        }
+
+        private string GetProjectFolder()
+        {
+            return !string.IsNullOrWhiteSpace(currentFilePath)
+                ? Path.GetDirectoryName(Path.GetFullPath(currentFilePath))
+                : null;
+        }
+
+        private static bool AreSamePathRoot(string leftPath, string rightPath)
+        {
+            var leftRoot = Path.GetPathRoot(Path.GetFullPath(leftPath));
+            var rightRoot = Path.GetPathRoot(Path.GetFullPath(rightPath));
+            return string.Equals(leftRoot, rightRoot, StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static string MakeRelativeOutputRootFolder(string baseFolder, string targetFolder)
+        {
+            var baseUri = new Uri(EnsureDirectorySeparator(Path.GetFullPath(baseFolder)));
+            var targetUri = new Uri(EnsureDirectorySeparator(Path.GetFullPath(targetFolder)));
+            var relative = Uri.UnescapeDataString(baseUri.MakeRelativeUri(targetUri).ToString()).Replace('/', Path.DirectorySeparatorChar).TrimEnd(Path.DirectorySeparatorChar);
+            if (string.IsNullOrWhiteSpace(relative)) return @".\";
+            if (relative == ".") return @".\";
+            return relative.StartsWith("..", StringComparison.Ordinal) ? relative : @".\" + relative;
+        }
+
+        private static string EnsureDirectorySeparator(string path)
+        {
+            return path.EndsWith(Path.DirectorySeparatorChar.ToString(), StringComparison.Ordinal) ? path : path + Path.DirectorySeparatorChar;
+        }
+
+        private void ApplyExportSettingsFromView(bool markChanged = true)
         {
             var outputRootBox = contentPanel.Controls.Find("OutputRootBox", true).FirstOrDefault() as TextBox;
             var outputFormatCombo = contentPanel.Controls.Find("OutputFormatCombo", true).FirstOrDefault() as ComboBox;
@@ -654,7 +973,10 @@ namespace EnvSecured.WinForms.Forms
             project.Settings.OutputStructuredSingleFile = outputStructuredSingleFileBox?.Checked == true;
             project.Settings.OutputStructuredSingleFileMask = outputStructuredSingleFileMaskBox?.Text;
             SaveOutputTargetsFromView(false);
-            Changed();
+            if (markChanged)
+            {
+                Changed();
+            }
         }
 
         private void SetProjectEncryptionMode(string label)
@@ -711,7 +1033,8 @@ namespace EnvSecured.WinForms.Forms
                 return;
             }
 
-            if (!EnsureOutputRootFolderExists(project.Settings.OutputRootFolder))
+            var outputRootFolder = ResolveOutputRootFolder(project.Settings.OutputRootFolder);
+            if (!EnsureOutputRootFolderExists(outputRootFolder))
             {
                 return;
             }
@@ -922,7 +1245,7 @@ namespace EnvSecured.WinForms.Forms
             var ext = NormalizeOutputExtension(project.Settings.OutputExtension, project.Settings.OutputFormat);
             var relative = ApplyOutputMaskPlaceholders(mask, ext, ExportServiceName(target.Service, "CONFIG", true), ExportEnvironmentName(target.Environment, "CONFIG"));
             relative = relative.TrimStart('\\', '/');
-            return Path.Combine(project.Settings.OutputRootFolder, relative);
+            return Path.Combine(ResolveOutputRootFolder(project.Settings.OutputRootFolder), relative);
         }
 
         private string BuildStructuredOutputPath()
@@ -930,7 +1253,20 @@ namespace EnvSecured.WinForms.Forms
             var ext = NormalizeOutputExtension(project.Settings.OutputExtension, project.Settings.OutputFormat);
             var relative = ApplyOutputMaskPlaceholders(DefaultIfBlank(project.Settings.OutputStructuredSingleFileMask, @"{project_name}{.ext}"), ext, string.Empty, string.Empty)
                 .TrimStart('\\', '/');
-            return Path.Combine(project.Settings.OutputRootFolder, relative);
+            return Path.Combine(ResolveOutputRootFolder(project.Settings.OutputRootFolder), relative);
+        }
+
+        private string ResolveOutputRootFolder(string outputRootFolder)
+        {
+            if (string.IsNullOrWhiteSpace(outputRootFolder) || Path.IsPathRooted(outputRootFolder))
+            {
+                return outputRootFolder;
+            }
+
+            var baseFolder = !string.IsNullOrWhiteSpace(currentFilePath)
+                ? Path.GetDirectoryName(Path.GetFullPath(currentFilePath))
+                : Environment.CurrentDirectory;
+            return Path.GetFullPath(Path.Combine(baseFolder ?? Environment.CurrentDirectory, outputRootFolder));
         }
 
         private string ApplyOutputMaskPlaceholders(string mask, string extension, string serviceName, string environmentName)
@@ -1461,7 +1797,7 @@ namespace EnvSecured.WinForms.Forms
             info.Controls.Add(new Label
             {
                 Dock = DockStyle.Fill,
-                Text = $"Display: {variable.DisplayName}\r\nType: {variable.Type}\r\nSecret: {(variable.IsSecret ? "Yes" : "No")}\r\nAllow null: {(variable.AllowNull ? "Yes" : "No")}\r\nAllow blank: {(variable.AllowBlank ? "Yes" : "No")}\r\nEffective: {DisplayValue(variable, effectiveValue)}\r\nSource: {source}",
+                Text = $"Display: {variable.DisplayName}\r\nType: {variable.Type}\r\nSecret: {(variable.IsSecret ? "Yes" : "No")}\r\nAllow shared secret: {(variable.AllowSharedSecret ? "Yes" : "No")}\r\nAllow null: {(variable.AllowNull ? "Yes" : "No")}\r\nAllow blank: {(variable.AllowBlank ? "Yes" : "No")}\r\nEffective: {DisplayValue(variable, effectiveValue)}\r\nSource: {source}",
                 Padding = new Padding(12)
             });
 
@@ -1480,10 +1816,12 @@ namespace EnvSecured.WinForms.Forms
                 matrix.KeyDown -= VariableMatrixKeyDown;
                 matrix.CellValueChanged -= VariableMatrixCellValueChanged;
                 matrix.CurrentCellDirtyStateChanged -= VariableMatrixCurrentCellDirtyStateChanged;
+                matrix.CellMouseDown -= VariableMatrixCellMouseDown;
                 matrix.CellDoubleClick += VariableMatrixCellDoubleClick;
                 matrix.KeyDown += VariableMatrixKeyDown;
                 matrix.CellValueChanged += VariableMatrixCellValueChanged;
                 matrix.CurrentCellDirtyStateChanged += VariableMatrixCurrentCellDirtyStateChanged;
+                matrix.CellMouseDown += VariableMatrixCellMouseDown;
                 var valueColors = BuildVariableMatrixValueColors(variable);
                 matrix.Columns.Add(new DataGridViewTextBoxColumn { Name = "Service", HeaderText = "Service", ReadOnly = true, FillWeight = 120 });
                 matrix.Columns.Add(new DataGridViewCheckBoxColumn { Name = "Use", HeaderText = "Use", FillWeight = 45 });
@@ -1579,14 +1917,17 @@ namespace EnvSecured.WinForms.Forms
             {
                 return MatrixCellState.Empty("-");
             }
+            var scope = MatrixScope(service?.Id, environment?.Id);
+            var directValue = FindDirectValue(variable.Id, scope, service?.Id, environment?.Id);
             var effective = BuildDisplayEffective(service?.Id, environment?.Id).FirstOrDefault(x => x.Variable.Id == variable.Id);
             if (effective == null || effective.Missing)
             {
                 return MatrixCellState.Empty("-");
             }
 
-            var display = DisplayValue(variable, effective.Value);
-            var color = valueColors.TryGetValue(effective.Value ?? string.Empty, out var mappedColor)
+            var displayValue = !ShowCalculatedValues() && directValue != null ? directValue.Value : effective.Value;
+            var display = DisplayValue(variable, displayValue);
+            var color = valueColors.TryGetValue(displayValue ?? string.Empty, out var mappedColor)
                 ? mappedColor
                 : Color.White;
             var direct =
@@ -1610,12 +1951,45 @@ namespace EnvSecured.WinForms.Forms
             return MatrixCellState.Empty("-");
         }
 
+        private static ValueScope MatrixScope(string serviceId, string environmentId)
+        {
+            if (serviceId == null && environmentId == null) return ValueScope.Global;
+            if (serviceId == null) return ValueScope.Environment;
+            if (environmentId == null) return ValueScope.Service;
+            return ValueScope.ServiceEnvironment;
+        }
+
         private void VariableMatrixCellDoubleClick(object sender, DataGridViewCellEventArgs e)
         {
             if (e.RowIndex < 0 || e.ColumnIndex <= 1) return;
             var matrix = sender as DataGridView;
             if (matrix == null) return;
             SetVariableMatrixDirectValue(matrix, e.RowIndex, e.ColumnIndex);
+        }
+
+        private void VariableMatrixCellMouseDown(object sender, DataGridViewCellMouseEventArgs e)
+        {
+            if (e.Button != MouseButtons.Right || e.RowIndex < 0 || e.ColumnIndex < 0) return;
+            var matrix = sender as DataGridView;
+            if (matrix == null) return;
+            SelectGridCell(matrix, e.RowIndex, e.ColumnIndex);
+            var target = e.ColumnIndex > 1 ? MatrixTargetFromCell(matrix, e.RowIndex, e.ColumnIndex) : null;
+            var variable = target?.Variable ?? project?.Variables.FirstOrDefault(v => v.Id == Convert.ToString(matrix.Tag));
+            var effective = target == null
+                ? null
+                : BuildDisplayEffective(target.ServiceId, target.EnvironmentId).FirstOrDefault(x => x.Variable.Id == target.Variable.Id && !x.Missing);
+
+            var menu = new ContextMenuStrip();
+            menu.Items.Add("Copy Key", null, (s, args) => CopyText(variable?.Key));
+            menu.Items.Add("Copy ${KEY}", null, (s, args) => CopyText(VariablePlaceholder(variable?.Key)));
+            menu.Items.Add("Copy Value", null, (s, args) => CopyText(Convert.ToString(matrix.Rows[e.RowIndex].Cells[e.ColumnIndex].Value)));
+            menu.Items.Add("Copy Effective Value", null, (s, args) => CopyText(variable == null ? string.Empty : DisplayValue(variable, effective?.Value)));
+            if (target != null)
+            {
+                menu.Items.Add(new ToolStripSeparator());
+                menu.Items.Add("Delete Direct Value", null, (s, args) => DeleteVariableMatrixDirectValue(matrix, e.RowIndex, e.ColumnIndex));
+            }
+            menu.Show(matrix, matrix.PointToClient(Cursor.Position));
         }
 
         private void VariableMatrixCurrentCellDirtyStateChanged(object sender, EventArgs e)
@@ -1684,11 +2058,7 @@ namespace EnvSecured.WinForms.Forms
                 });
             }
 
-            modified = true;
-            SaveRecoveryBackupIfPossible();
-            RefreshVariableGrid();
-            BuildVariableServiceEnvironmentMatrix(matrix, variable);
-            RefreshStatus();
+            RefreshAfterVariableMatrixChange(matrix, variable, e.RowIndex, e.ColumnIndex);
         }
 
         private void VariableMatrixKeyDown(object sender, KeyEventArgs e)
@@ -1705,7 +2075,11 @@ namespace EnvSecured.WinForms.Forms
             var target = MatrixTargetFromCell(matrix, rowIndex, columnIndex);
             if (target == null) return;
             var existing = FindDirectValue(target.Variable.Id, target.Scope, target.ServiceId, target.EnvironmentId);
-            var value = PromptDialog.Show(this, "Set Value", $"{target.Variable.Key} value for {target.Label}:", existing?.Value ?? string.Empty);
+            var orphanedBlankServiceValue = FindOrphanedBlankServiceValue(target);
+            var currentValue = NewerValue(orphanedBlankServiceValue, existing) ?? BuildDisplayEffective(target.ServiceId, target.EnvironmentId)
+                .FirstOrDefault(x => x.Variable.Id == target.Variable.Id && !x.Missing)
+                ?.Value ?? string.Empty;
+            var value = PromptDialog.Show(this, "Set Value", $"{target.Variable.Key} value for {target.Label}:", currentValue);
             if (value == null) return;
 
             if (existing == null)
@@ -1728,9 +2102,13 @@ namespace EnvSecured.WinForms.Forms
                 existing.IsEncrypted = target.Variable.IsSecret;
                 existing.UpdatedAt = DateTime.UtcNow;
             }
+            if (orphanedBlankServiceValue != null)
+            {
+                project.Values.Remove(orphanedBlankServiceValue);
+            }
 
             EnsureContractForMatrixTarget(target);
-            Changed();
+            RefreshAfterVariableMatrixChange(matrix, target.Variable, rowIndex, columnIndex);
         }
 
         private void DeleteVariableMatrixDirectValue(DataGridView matrix, int rowIndex, int columnIndex)
@@ -1745,7 +2123,44 @@ namespace EnvSecured.WinForms.Forms
             }
 
             project.Values.Remove(existing);
-            Changed();
+            RefreshAfterVariableMatrixChange(matrix, target.Variable, rowIndex, columnIndex);
+        }
+
+        private void RefreshAfterVariableMatrixChange(DataGridView matrix, VariableDefinitionModel variable, int rowIndex, int columnIndex)
+        {
+            modified = true;
+            SaveRecoveryBackupIfPossible();
+            RefreshVariableGrid();
+            BuildVariableServiceEnvironmentMatrix(matrix, variable);
+            RestoreVariableMatrixCell(matrix, rowIndex, columnIndex);
+            RefreshStatus();
+        }
+
+        private static void RestoreVariableMatrixCell(DataGridView matrix, int rowIndex, int columnIndex)
+        {
+            if (matrix == null || matrix.Rows.Count == 0 || matrix.Columns.Count == 0) return;
+            rowIndex = Math.Max(0, Math.Min(rowIndex, matrix.Rows.Count - 1));
+            columnIndex = Math.Max(0, Math.Min(columnIndex, matrix.Columns.Count - 1));
+            matrix.CurrentCell = matrix.Rows[rowIndex].Cells[columnIndex];
+            matrix.Rows[rowIndex].Selected = true;
+        }
+
+        private static void SelectGridCell(DataGridView grid, int rowIndex, int columnIndex)
+        {
+            grid.ClearSelection();
+            grid.CurrentCell = grid.Rows[rowIndex].Cells[columnIndex];
+            grid.Rows[rowIndex].Selected = true;
+            grid.Rows[rowIndex].Cells[columnIndex].Selected = true;
+        }
+
+        private static void CopyText(string text)
+        {
+            Clipboard.SetText(text ?? string.Empty);
+        }
+
+        private static string VariablePlaceholder(string key)
+        {
+            return string.IsNullOrWhiteSpace(key) ? string.Empty : "${" + key + "}";
         }
 
         private MatrixValueTarget MatrixTargetFromCell(DataGridView matrix, int rowIndex, int columnIndex)
@@ -1756,7 +2171,8 @@ namespace EnvSecured.WinForms.Forms
 
             var row = matrix.Rows[rowIndex];
             var column = matrix.Columns[columnIndex];
-            var serviceId = Convert.ToString(row.Tag);
+            var serviceId = row.Tag as string;
+            if (string.IsNullOrWhiteSpace(serviceId)) serviceId = null;
             var environment = column.Tag as EnvironmentModel;
             var environmentId = environment?.Id;
             ValueScope scope;
@@ -1777,6 +2193,23 @@ namespace EnvSecured.WinForms.Forms
                 v.Scope == scope &&
                 v.ServiceId == serviceId &&
                 v.EnvironmentId == environmentId);
+        }
+
+        private VariableValueModel FindOrphanedBlankServiceValue(MatrixValueTarget target)
+        {
+            if (target.Scope != ValueScope.Global && target.Scope != ValueScope.Environment) return null;
+            return project.Values.LastOrDefault(v =>
+                v.VariableId == target.Variable.Id &&
+                (v.Scope == ValueScope.Service || v.Scope == ValueScope.ServiceEnvironment) &&
+                string.IsNullOrWhiteSpace(v.ServiceId) &&
+                v.EnvironmentId == target.EnvironmentId);
+        }
+
+        private static string NewerValue(VariableValueModel left, VariableValueModel right)
+        {
+            if (left == null) return right?.Value;
+            if (right == null) return left.Value;
+            return left.UpdatedAt >= right.UpdatedAt ? left.Value : right.Value;
         }
 
         private void EnsureContractForMatrixTarget(MatrixValueTarget target)
@@ -1822,39 +2255,8 @@ namespace EnvSecured.WinForms.Forms
                 .Where(v => v.IsActive)
                 .OrderBy(v => v.SortOrder)
                 .ThenBy(v => v.Key)
-                .Select(v => BuildRawEffectiveValue(v, serviceId, environmentId))
+                .Select(v => EffectiveConfigService.BuildRawValue(project, v, serviceId, environmentId))
                 .ToList();
-        }
-
-        private EffectiveValue BuildRawEffectiveValue(VariableDefinitionModel variable, string serviceId, string environmentId)
-        {
-            VariableValueModel selected = null;
-            foreach (var scope in new[] { ValueScope.Global, ValueScope.Environment, ValueScope.Service, ValueScope.ServiceEnvironment })
-            {
-                var candidate = project.Values.LastOrDefault(v =>
-                    v.VariableId == variable.Id &&
-                    v.Scope == scope &&
-                    MatchesValueScope(v, scope, serviceId, environmentId));
-                if (candidate != null)
-                {
-                    selected = candidate;
-                }
-            }
-
-            return new EffectiveValue
-            {
-                Variable = variable,
-                Value = selected?.Value,
-                SourceScope = selected?.Scope
-            };
-        }
-
-        private static bool MatchesValueScope(VariableValueModel value, ValueScope scope, string serviceId, string environmentId)
-        {
-            if (scope == ValueScope.Global) return value.ServiceId == null && value.EnvironmentId == null;
-            if (scope == ValueScope.Environment) return value.ServiceId == null && value.EnvironmentId == environmentId;
-            if (scope == ValueScope.Service) return value.ServiceId == serviceId && value.EnvironmentId == null;
-            return value.ServiceId == serviceId && value.EnvironmentId == environmentId;
         }
 
         private void RenderServicesView()
@@ -1871,6 +2273,7 @@ namespace EnvSecured.WinForms.Forms
                 s.DisplayName,
                 s.OutputFolder,
                 s.DefaultPrefix,
+                SharedWithoutContract = s.AllowSharedVariablesWithoutContract,
                 s.ConfigName,
                 s.TomlName,
                 s.YamlName,
@@ -2858,6 +3261,7 @@ namespace EnvSecured.WinForms.Forms
                 { "Validation", 35 },
                 { "Key", 300 },
                 { "Secret", 56 },
+                { "AllowSharedSecret", 92 },
                 { "Required", 60 },
                 { "AllowNull", 75 },
                 { "Global", 220 },
@@ -2877,6 +3281,7 @@ namespace EnvSecured.WinForms.Forms
             grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Validation", HeaderText = "!", ReadOnly = true, FillWeight = 35 });
             grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Key", HeaderText = "Key", ReadOnly = true, FillWeight = 150 });
             grid.Columns.Add(new DataGridViewCheckBoxColumn { Name = "Secret", HeaderText = "Secret", FillWeight = 55 });
+            grid.Columns.Add(new DataGridViewCheckBoxColumn { Name = "AllowSharedSecret", HeaderText = "Shared Secret", FillWeight = 80 });
             grid.Columns.Add(new DataGridViewCheckBoxColumn { Name = "Required", HeaderText = "Required", FillWeight = 65 });
             grid.Columns.Add(new DataGridViewCheckBoxColumn { Name = "AllowNull", HeaderText = "Allow Null", FillWeight = 75 });
             grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Global", HeaderText = "Global", ReadOnly = true });
@@ -2900,11 +3305,28 @@ namespace EnvSecured.WinForms.Forms
                 }
             };
             grid.ColumnHeaderMouseClick += (s, e) => ShowVariableColumnFilterMenu(grid, e.ColumnIndex);
+            grid.CellMouseDown += VariableGridCellMouseDown;
             grid.CellValueChanged += (s, e) => ApplyVariableGridCheckboxChange(grid, root, e.RowIndex, e.ColumnIndex);
             grid.DataError += (s, e) => { e.ThrowException = false; };
             AttachColumnWidthPersistence(grid, "Variables");
             RestoreColumnWidths(grid, "Variables");
             return grid;
+        }
+
+        private void VariableGridCellMouseDown(object sender, DataGridViewCellMouseEventArgs e)
+        {
+            if (e.Button != MouseButtons.Right || e.RowIndex < 0 || e.ColumnIndex < 0) return;
+            var grid = sender as DataGridView;
+            if (grid == null) return;
+            SelectGridCell(grid, e.RowIndex, e.ColumnIndex);
+            var row = grid.Rows[e.RowIndex];
+            var key = Convert.ToString(row.Cells["Key"].Value);
+            var menu = new ContextMenuStrip();
+            menu.Items.Add("Copy Key", null, (s, args) => CopyText(key));
+            menu.Items.Add("Copy ${KEY}", null, (s, args) => CopyText(VariablePlaceholder(key)));
+            menu.Items.Add("Copy Value", null, (s, args) => CopyText(Convert.ToString(row.Cells[e.ColumnIndex].Value)));
+            menu.Items.Add("Copy Effective Value", null, (s, args) => CopyText(Convert.ToString(row.Cells["Effective"].Value)));
+            menu.Show(grid, grid.PointToClient(Cursor.Position));
         }
 
         private void RefreshVariableGrid()
@@ -2941,6 +3363,7 @@ namespace EnvSecured.WinForms.Forms
                     ValidationIndicator(v.Id, validationByVariable),
                     v.Key,
                     v.IsSecret,
+                    v.AllowSharedSecret,
                     required,
                     v.AllowNull,
                     globalValue,
@@ -3028,6 +3451,7 @@ namespace EnvSecured.WinForms.Forms
         {
             return PassesTextFilter("Key", variable.Key) &&
                 PassesBoolFilter("Secret", variable.IsSecret) &&
+                PassesBoolFilter("AllowSharedSecret", variable.AllowSharedSecret) &&
                 PassesBoolFilter("Required", required) &&
                 PassesTextFilter("Global", globalValue) &&
                 PassesTextFilter("Environment", environmentValue) &&
@@ -3058,7 +3482,7 @@ namespace EnvSecured.WinForms.Forms
             if (column.Name == "Id") return;
 
             var menu = new ContextMenuStrip();
-            if (column.Name == "Secret" || column.Name == "Required")
+            if (column.Name == "Secret" || column.Name == "AllowSharedSecret" || column.Name == "Required" || column.Name == "AllowNull")
             {
                 AddBoolFilterMenuItem(menu, column.Name, "All");
                 AddBoolFilterMenuItem(menu, column.Name, "Yes");
@@ -3139,6 +3563,7 @@ namespace EnvSecured.WinForms.Forms
         private static string BaseVariableHeaderText(string columnName, string fallback = null)
         {
             if (columnName == "ServiceEnvironment") return "ServiceEnvironment";
+            if (columnName == "AllowSharedSecret") return "Shared Secret";
             return fallback ?? columnName;
         }
 
@@ -3146,7 +3571,7 @@ namespace EnvSecured.WinForms.Forms
         {
             if (rowIndex < 0 || columnIndex < 0 || rowIndex >= grid.Rows.Count) return;
             var columnName = grid.Columns[columnIndex].Name;
-            if (columnName != "Secret" && columnName != "Required" && columnName != "AllowNull") return;
+            if (columnName != "Secret" && columnName != "AllowSharedSecret" && columnName != "Required" && columnName != "AllowNull") return;
 
             var variableId = Convert.ToString(grid.Rows[rowIndex].Cells["Id"].Value);
             var variable = project.Variables.FirstOrDefault(v => v.Id == variableId);
@@ -3157,6 +3582,21 @@ namespace EnvSecured.WinForms.Forms
             {
                 variable.IsSecret = enabled;
                 variable.Type = enabled ? VariableType.Password : VariableType.String;
+                if (!enabled)
+                {
+                    variable.AllowSharedSecret = false;
+                    grid.Rows[rowIndex].Cells["AllowSharedSecret"].Value = false;
+                }
+            }
+            else if (columnName == "AllowSharedSecret")
+            {
+                variable.AllowSharedSecret = enabled;
+                if (enabled)
+                {
+                    variable.IsSecret = true;
+                    variable.Type = VariableType.Password;
+                    grid.Rows[rowIndex].Cells["Secret"].Value = true;
+                }
             }
             else if (columnName == "AllowNull")
             {
@@ -3279,7 +3719,7 @@ namespace EnvSecured.WinForms.Forms
             {
                 Text = isNew ? "Add Service" : "Service Card",
                 Width = 560,
-                Height = 520,
+                Height = 552,
                 StartPosition = FormStartPosition.CenterParent,
                 FormBorderStyle = FormBorderStyle.FixedDialog,
                 MinimizeBox = false,
@@ -3289,10 +3729,10 @@ namespace EnvSecured.WinForms.Forms
                 var root = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 2, Padding = new Padding(10) };
                 root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
                 root.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
-                var form = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 12 };
+                var form = new TableLayoutPanel { Dock = DockStyle.Top, Height = 13 * 32, ColumnCount = 2, RowCount = 13 };
                 form.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 150));
                 form.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-                for (var i = 0; i < 12; i++) form.RowStyles.Add(new RowStyle(SizeType.Absolute, 32));
+                for (var i = 0; i < 13; i++) form.RowStyles.Add(new RowStyle(SizeType.Absolute, 32));
 
                 var idBox = AddCardTextBox(form, "Id:", 0, service.Id, true);
                 var nameBox = AddCardTextBox(form, "Name:", 1, service.Name, false);
@@ -3300,12 +3740,14 @@ namespace EnvSecured.WinForms.Forms
                 var outputFolderBox = AddCardTextBox(form, "Output folder:", 3, service.OutputFolder, false);
                 var prefixBox = AddCardTextBox(form, "Default prefix:", 4, service.DefaultPrefix, false);
                 var activeBox = AddCardCheckBox(form, "Active:", 5, service.IsActive);
-                var configBox = AddCardTextBox(form, "CONFIG name:", 6, service.ConfigName, false);
-                var tomlBox = AddCardTextBox(form, "TOML name:", 7, service.TomlName, false);
-                var yamlBox = AddCardTextBox(form, "YAML name:", 8, service.YamlName, false);
-                var xmlBox = AddCardTextBox(form, "XML name:", 9, service.XmlName, false);
-                var jsonBox = AddCardTextBox(form, "JSON name:", 10, service.JsonName, false);
-                var descriptionBox = AddCardTextBox(form, "Description:", 11, service.Description, false);
+                var sharedWithoutContractBox = AddCardCheckBox(form, "Shared vars:", 6, service.AllowSharedVariablesWithoutContract);
+                sharedWithoutContractBox.Text = "Allow without explicit contract";
+                var configBox = AddCardTextBox(form, "CONFIG name:", 7, service.ConfigName, false);
+                var tomlBox = AddCardTextBox(form, "TOML name:", 8, service.TomlName, false);
+                var yamlBox = AddCardTextBox(form, "YAML name:", 9, service.YamlName, false);
+                var xmlBox = AddCardTextBox(form, "XML name:", 10, service.XmlName, false);
+                var jsonBox = AddCardTextBox(form, "JSON name:", 11, service.JsonName, false);
+                var descriptionBox = AddCardTextBox(form, "Description:", 12, service.Description, false);
 
                 nameBox.TextChanged += (s, e) =>
                 {
@@ -3344,6 +3786,7 @@ namespace EnvSecured.WinForms.Forms
                     service.OutputFolder = DefaultIfBlank(outputFolderBox.Text, Slug(name));
                     service.DefaultPrefix = prefixBox.Text;
                     service.IsActive = activeBox.Checked;
+                    service.AllowSharedVariablesWithoutContract = sharedWithoutContractBox.Checked;
                     service.ConfigName = configBox.Text;
                     service.TomlName = tomlBox.Text;
                     service.YamlName = yamlBox.Text;
@@ -3373,7 +3816,7 @@ namespace EnvSecured.WinForms.Forms
                 var root = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 2, Padding = new Padding(10) };
                 root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
                 root.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
-                var form = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 9 };
+                var form = new TableLayoutPanel { Dock = DockStyle.Top, Height = 9 * 32, ColumnCount = 2, RowCount = 9 };
                 form.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 150));
                 form.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
                 for (var i = 0; i < 9; i++) form.RowStyles.Add(new RowStyle(SizeType.Absolute, 32));
@@ -3436,7 +3879,13 @@ namespace EnvSecured.WinForms.Forms
         private static TextBox AddCardTextBox(TableLayoutPanel form, string label, int row, string value, bool readOnly)
         {
             form.Controls.Add(new Label { Text = label, Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft }, 0, row);
-            var box = new TextBox { Dock = DockStyle.Fill, Text = value ?? string.Empty, ReadOnly = readOnly };
+            var box = new TextBox
+            {
+                Anchor = AnchorStyles.Left | AnchorStyles.Right,
+                Margin = new Padding(0, 4, 0, 0),
+                Text = value ?? string.Empty,
+                ReadOnly = readOnly
+            };
             form.Controls.Add(box, 1, row);
             return box;
         }
@@ -3444,7 +3893,7 @@ namespace EnvSecured.WinForms.Forms
         private static CheckBox AddCardCheckBox(TableLayoutPanel form, string label, int row, bool value)
         {
             form.Controls.Add(new Label { Text = label, Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft }, 0, row);
-            var box = new CheckBox { Dock = DockStyle.Left, Checked = value, AutoSize = true };
+            var box = new CheckBox { Anchor = AnchorStyles.Left, Margin = new Padding(0, 6, 0, 0), Checked = value, AutoSize = true };
             form.Controls.Add(box, 1, row);
             return box;
         }
@@ -3620,14 +4069,12 @@ namespace EnvSecured.WinForms.Forms
 
         private bool IsVariableUsedByService(string variableId, string serviceId)
         {
-            var contract = project.Contracts.FirstOrDefault(c => c.VariableId == variableId && c.ServiceId == serviceId);
-            if (contract != null) return !contract.Excluded;
-            return HasGlobalValue(variableId);
+            return ProjectService.IsVariableUsedByService(project, variableId, serviceId);
         }
 
         private bool HasGlobalValue(string variableId)
         {
-            return project.Values.Any(v => v.VariableId == variableId && v.Scope == ValueScope.Global && v.ServiceId == null && v.EnvironmentId == null);
+            return ProjectService.HasGlobalValue(project, variableId);
         }
 
         private void AutoAssignVariablesToService(ServiceModel service)
@@ -3991,9 +4438,8 @@ namespace EnvSecured.WinForms.Forms
             var json = File.ReadAllText(actualPath);
             var serializer = new JavaScriptSerializer { MaxJsonLength = int.MaxValue };
 
-            if (json.IndexOf("\"EnvSecured.EncryptedProject.v1\"", StringComparison.OrdinalIgnoreCase) >= 0)
+            if (TryReadEncryptedEnvelope(json, serializer, out var envelope))
             {
-                var envelope = serializer.Deserialize<EncryptedProjectFile>(json);
                 if (envelope?.Payload == null || envelope.Crypto == null)
                 {
                     MessageBox.Show(this, "Encrypted project file is invalid.", "Open Project", MessageBoxButtons.OK, MessageBoxIcon.Warning);
@@ -4002,7 +4448,7 @@ namespace EnvSecured.WinForms.Forms
 
                 var key = UnlockCryptoMetadata(envelope.Crypto);
                 if (key == null) return null;
-                vaultKey = key;
+                SetVaultKey(key);
                 var projectJson = cryptoService.DecryptString(envelope.Payload, key);
                 var decryptedProject = serializer.Deserialize<ProjectModel>(projectJson);
                 decryptedProject.Crypto = envelope.Crypto;
@@ -4018,6 +4464,11 @@ namespace EnvSecured.WinForms.Forms
                 return null;
             }
             return loadedProject;
+        }
+
+        private static bool TryReadEncryptedEnvelope(string json, JavaScriptSerializer serializer, out EncryptedProjectFile envelope)
+        {
+            return EncryptedEnvelopeDetector.TryRead(json, serializer, out envelope);
         }
 
         private bool SaveWholeJsonVaultFile(ProjectModel storageProject, string path, bool recoveryBackup)
@@ -4061,6 +4512,7 @@ namespace EnvSecured.WinForms.Forms
             var storageProject = CloneProject(project);
             storageProject.Settings = storageProject.Settings ?? new ProjectSettings();
             storageProject.Settings.CliExportPasswordRequired = project.Settings?.CliExportPasswordRequired == true;
+            storageProject.Settings.CliExportPasswordRequiredPolicy = storageProject.Settings.CliExportPasswordRequired;
             NormalizeLoadedProjectSettings(storageProject);
             if (IsWholeJsonEncryption(storageProject))
             {
@@ -4116,7 +4568,7 @@ namespace EnvSecured.WinForms.Forms
 
         private bool UnlockProjectIfNeeded(ProjectModel loadedProject)
         {
-            vaultKey = null;
+            ClearVaultKey();
             if (!ProjectHasEncryptedValues(loadedProject))
             {
                 return true;
@@ -4147,6 +4599,7 @@ namespace EnvSecured.WinForms.Forms
             }
 
             storageProject.Settings.CliExportPasswordRequiredEncrypted = cryptoService.EncryptString(storageProject.Settings.CliExportPasswordRequired ? "required:true:v1" : "required:false:v1", vaultKey);
+            storageProject.Settings.CliExportPasswordRequiredPolicy = storageProject.Settings.CliExportPasswordRequired;
             project.Crypto = storageProject.Crypto;
             return true;
         }
@@ -4157,11 +4610,13 @@ namespace EnvSecured.WinForms.Forms
             if (targetProject.Settings.CliExportPasswordRequiredEncrypted == null)
             {
                 targetProject.Settings.CliExportPasswordRequired = true;
+                targetProject.Settings.CliExportPasswordRequiredPolicy = true;
                 return;
             }
 
             var value = cryptoService.DecryptString(targetProject.Settings.CliExportPasswordRequiredEncrypted, key);
             targetProject.Settings.CliExportPasswordRequired = string.Equals(value, "required:true:v1", StringComparison.Ordinal);
+            targetProject.Settings.CliExportPasswordRequiredPolicy = targetProject.Settings.CliExportPasswordRequired;
         }
 
         private byte[] UnlockCryptoMetadata(VaultCryptoMetadata crypto)
@@ -4176,15 +4631,17 @@ namespace EnvSecured.WinForms.Forms
             {
                 var password = PromptDialog.ShowPassword(this, "Unlock Vault", "Master password:");
                 if (password == null) return null;
+                byte[] key = null;
                 try
                 {
-                    var key = cryptoService.DeriveKey(password, Convert.FromBase64String(crypto.Salt), crypto.Iterations);
+                    key = cryptoService.DeriveKey(password, Convert.FromBase64String(crypto.Salt), crypto.Iterations);
                     cryptoService.DecryptString(crypto.KeyCheck, key);
                     SaveCachedVaultKey(crypto, key);
                     return key;
                 }
                 catch (Exception ex)
                 {
+                    ClearKey(key);
                     MessageBox.Show(this, "Cannot unlock vault.\r\n\r\n" + ex.Message, "Unlock Vault", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 }
             }
@@ -4200,7 +4657,7 @@ namespace EnvSecured.WinForms.Forms
                 return CreateVaultKey(targetProject);
             }
 
-            vaultKey = UnlockCryptoMetadata(targetProject.Crypto);
+            SetVaultKey(UnlockCryptoMetadata(targetProject.Crypto));
             return vaultKey != null;
         }
 
@@ -4230,7 +4687,7 @@ namespace EnvSecured.WinForms.Forms
 
             targetProject.Crypto.Salt = Convert.ToBase64String(salt);
             targetProject.Crypto.Iterations = targetProject.Crypto.Iterations <= 0 ? 300000 : targetProject.Crypto.Iterations;
-            vaultKey = cryptoService.DeriveKey(password, salt, targetProject.Crypto.Iterations);
+            SetVaultKey(cryptoService.DeriveKey(password, salt, targetProject.Crypto.Iterations));
             targetProject.Crypto.KeyCheck = cryptoService.EncryptString("EnvSecuredVaultKeyCheck:v1", vaultKey);
             SaveCachedVaultKey(targetProject.Crypto, vaultKey);
             return true;
@@ -4245,8 +4702,16 @@ namespace EnvSecured.WinForms.Forms
             {
                 var key = dpapiCacheService.TryLoad(cachePath);
                 if (key == null) return null;
-                cryptoService.DecryptString(crypto.KeyCheck, key);
-                return key;
+                try
+                {
+                    cryptoService.DecryptString(crypto.KeyCheck, key);
+                    return key;
+                }
+                catch
+                {
+                    ClearKey(key);
+                    return null;
+                }
             }
             catch
             {

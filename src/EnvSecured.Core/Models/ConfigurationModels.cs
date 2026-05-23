@@ -31,6 +31,7 @@ namespace EnvSecured.Core.Models
         public string JsonName { get; set; }
         public int SortOrder { get; set; }
         public bool IsActive { get; set; } = true;
+        public bool AllowSharedVariablesWithoutContract { get; set; } = true;
     }
 
     public sealed class VariableDefinitionModel
@@ -41,6 +42,7 @@ namespace EnvSecured.Core.Models
         public string Description { get; set; }
         public VariableType Type { get; set; }
         public bool IsSecret { get; set; }
+        public bool AllowSharedSecret { get; set; }
         public bool AllowNull { get; set; }
         public bool AllowBlank { get; set; }
         public bool IsActive { get; set; } = true;

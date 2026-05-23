@@ -13,8 +13,10 @@ It is built for teams that need to keep variables, secrets, service contracts, i
 - Encryption modes: open values, secrets only, all values, or whole JSON file.
 - Per-project password support with optional DPAPI local key cache.
 - Service and environment scoped values with inheritance.
+- Effective value priority compatible with config file layering: global, environment, other services, and current service overrides.
 - `${VARIABLE_NAME}` interpolation and validation.
-- Service contract matrix for variable usage.
+- Service contract matrix for variable usage and required values.
+- Explicit controls for shared service variables and intentionally shared secrets.
 - Import from one or more text config files.
 - Export to CONFIG, TOML, YAML, XML, or JSON.
 - Multi-file export by service/environment or structured single-file export.
@@ -30,6 +32,7 @@ It is built for teams that need to keep variables, secrets, service contracts, i
 
 ```powershell
 dotnet restore EnvSecured.sln
+dotnet test EnvSecured.sln
 dotnet build src\EnvSecured.WinForms\EnvSecured.WinForms.csproj -c Release
 ```
 
@@ -45,22 +48,26 @@ The Release target embeds project assemblies into the main executable. The inten
 
 ```powershell
 EnvSecured.exe --help
-EnvSecured.exe validate --file C:\path\project.vault.json
-EnvSecured.exe export --file C:\path\project.vault.json --all --output-root C:\project\out
+EnvSecured.exe validate --file C:\path\project.envs
+EnvSecured.exe export --file C:\path\project.envs --all --output-root C:\project\out
 ```
 
-For encrypted projects, pass a password explicitly:
+Project vault files use the `.envs` extension. Double-click opening can be registered with `EnvSecured.exe --register-association`.
+
+CLI export commands require a password explicitly:
 
 ```powershell
-EnvSecured.exe export --file C:\path\project.vault.json --all --password "secret"
+EnvSecured.exe export --file C:\path\project.envs --all --password "secret"
 ```
 
 or via environment variable:
 
 ```powershell
 $env:ENVSECURED_PASSWORD = "secret"
-EnvSecured.exe export --file C:\path\project.vault.json --all
+EnvSecured.exe export --file C:\path\project.envs --all
 ```
+
+Relative output roots such as `.\out` or `..\out` are resolved from the vault file location.
 
 More CLI details are in [docs/CLI.md](docs/CLI.md).
 
@@ -68,6 +75,7 @@ More CLI details are in [docs/CLI.md](docs/CLI.md).
 
 - [Build and release](docs/BUILD.md)
 - [CLI reference](docs/CLI.md)
+- [Changelog](CHANGES.md)
 - [Project model](docs/PROJECT_MODEL.md)
 - [Security model](docs/SECURITY.md)
 - [Framework decision](docs/FRAMEWORK.md)
