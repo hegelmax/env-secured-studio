@@ -36,22 +36,32 @@ namespace EnvSecured.WinForms.Forms
         private bool suppressImportComboAddNew;
         private bool suppressSplitterPersistence;
         private bool suppressVariableMatrixEvents;
+        private bool suppressOutputTargetGridEvents;
+        private readonly HashSet<SplitContainer> splittersRestoring = new HashSet<SplitContainer>();
+        private readonly HashSet<DataGridView> gridsRestoringColumns = new HashSet<DataGridView>();
         private string currentView = "Variables";
         private FlowLayoutPanel commandPanel;
         private Button saveButton;
         private Button validateButton;
+        private Dictionary<string, Image> uiImages = new Dictionary<string, Image>(StringComparer.OrdinalIgnoreCase);
+        private ImageList navigationImages;
+        private GroupBox quickStatsGroup;
+        private TableLayoutPanel quickStatsTable;
+        private PictureBox vaultStatusIcon;
+        private Label vaultStatusLabel;
 
         private TreeView navigation;
         private Panel contentPanel;
         private ComboBox environmentCombo;
-        private ComboBox serviceCombo;
+        private ComboBox ownerFilterCombo;
+        private ComboBox scopeFilterCombo;
         private TextBox searchBox;
         private CheckBox showSecretsCheckBox;
         private CheckBox matrixLightColorsCheckBox;
         private CheckBox calculatedValuesCheckBox;
         private readonly Dictionary<string, string> variableColumnFilters = new Dictionary<string, string>();
         private DataGridView mainGrid;
-        private DataGridView contractsMatrix;
+        private DataGridView scopeMatrix;
         private DataGridView importFilesGrid;
         private DataGridView importPreviewGrid;
         private Button removeImportFilesButton;
@@ -68,6 +78,19 @@ namespace EnvSecured.WinForms.Forms
         private const string EncryptionWholeJson = "Whole JSON file";
         private const string PreferenceCalculatedValues = "Variables.CalculatedValues";
         private const string PreferenceLightMatrixColors = "Variables.LightMatrixColors";
+        private const string ScopeModeNone = "NONE";
+        private const string ScopeModeRead = "Read";
+        private const string ScopeModeOverride = "Override";
+        private const string ScopeModeExport = "Export";
+        private const string ScopeModeFull = "Full";
+        private static readonly string[] ScopeModes =
+        {
+            ScopeModeNone,
+            ScopeModeRead,
+            ScopeModeOverride,
+            ScopeModeExport,
+            ScopeModeFull
+        };
         private static readonly Color[] MatrixPalette =
         {
             Color.FromArgb(220, 92, 52),
@@ -253,7 +276,9 @@ namespace EnvSecured.WinForms.Forms
 
         private void BuildUi()
         {
-            var menu = new MenuStrip { Dock = DockStyle.Top };
+            LoadUiImages();
+
+            var menu = new MenuStrip { Dock = DockStyle.Top, BackColor = Color.White };
             var file = new ToolStripMenuItem("File");
             file.DropDownItems.Add("New Project", null, (s, e) => NewProject());
             file.DropDownItems.Add("Open Project", null, (s, e) => OpenProject());
@@ -263,46 +288,222 @@ namespace EnvSecured.WinForms.Forms
             menu.Items.Add(file);
             menu.Items.Add(new ToolStripMenuItem("Help", null, new ToolStripMenuItem("About", null, (s, e) => ShowAboutDialog())));
 
-            commandPanel = new FlowLayoutPanel { Dock = DockStyle.Top, Height = 38, Padding = new Padding(4), WrapContents = false };
-            AddCommand(commandPanel, "New Project", NewProject);
-            AddCommand(commandPanel, "Open", OpenProject);
-            saveButton = AddCommand(commandPanel, "Save", SaveProject);
-            validateButton = AddCommand(commandPanel, "Validate", ValidateAll);
-            AddCommand(commandPanel, "Render Files", RenderOutputFiles);
-            AddCommand(commandPanel, "Reset Layout", ResetLayoutSettings);
+            commandPanel = new FlowLayoutPanel
+            {
+                Dock = DockStyle.Fill,
+                Padding = new Padding(8, 6, 8, 6),
+                WrapContents = false,
+                BackColor = Color.White
+            };
+            AddCommand(commandPanel, "New Project", NewProject, "New", 118);
+            AddCommand(commandPanel, "Open", OpenProject, "Open", 96);
+            saveButton = AddCommand(commandPanel, "Save", SaveProject, "Save", 96);
+            validateButton = AddCommand(commandPanel, "Validate", ValidateAll, "Validate", 110);
+            AddCommand(commandPanel, "Export", RenderOutputFiles, "Export", 96);
+            AddCommand(commandPanel, "Reset Layout", ResetLayoutSettings, "Reset", 124);
+            var commandBar = new TableLayoutPanel { Dock = DockStyle.Top, Height = 46, ColumnCount = 2, RowCount = 1, BackColor = Color.White };
+            commandBar.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            commandBar.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 180));
+            commandBar.Controls.Add(commandPanel, 0, 0);
+            commandBar.Controls.Add(BuildVaultStatusPanel(), 1, 0);
 
-            navigation = new TreeView { Dock = DockStyle.Fill, HideSelection = false };
+            navigation = new TreeView
+            {
+                Dock = DockStyle.Fill,
+                HideSelection = false,
+                BorderStyle = BorderStyle.None,
+                FullRowSelect = true,
+                ShowLines = false,
+                ItemHeight = 24,
+                BackColor = Color.White
+            };
+            if (navigationImages != null) navigation.ImageList = navigationImages;
             navigation.AfterSelect += (s, e) =>
             {
                 if (e.Node.Level == 1)
                 {
-                    currentView = e.Node.Text;
+                    currentView = Convert.ToString(e.Node.Tag ?? e.Node.Text);
                     RenderCurrentView();
                 }
             };
 
             contentPanel = new Panel { Dock = DockStyle.Fill, Padding = new Padding(8) };
 
-            var root = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2 };
-            root.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 190));
+            var leftPanel = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 2, ColumnCount = 1, BackColor = Color.White };
+            leftPanel.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+            leftPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 128));
+            leftPanel.Controls.Add(navigation, 0, 0);
+            quickStatsTable = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 3, RowCount = 5, Padding = new Padding(6, 6, 6, 12) };
+            quickStatsTable.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 16));
+            quickStatsTable.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 118));
+            quickStatsTable.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            for (var i = 0; i < 5; i++) quickStatsTable.RowStyles.Add(new RowStyle(SizeType.Absolute, 17));
+            quickStatsGroup = new GroupBox { Dock = DockStyle.Fill, Text = "Quick Stats", Padding = new Padding(4) };
+            quickStatsGroup.Controls.Add(quickStatsTable);
+            leftPanel.Controls.Add(quickStatsGroup, 0, 1);
+
+            var root = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, BackColor = Color.FromArgb(248, 249, 251) };
+            root.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 220));
             root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-            root.Controls.Add(navigation, 0, 0);
+            root.Controls.Add(leftPanel, 0, 0);
             root.Controls.Add(contentPanel, 1, 0);
 
             status = new StatusStrip();
             Controls.Add(root);
-            Controls.Add(commandPanel);
+            Controls.Add(commandBar);
             Controls.Add(menu);
             Controls.Add(status);
             MainMenuStrip = menu;
         }
 
-        private static Button AddCommand(FlowLayoutPanel panel, string text, Action action)
+        private Button AddCommand(FlowLayoutPanel panel, string text, Action action, string imageKey = null, int width = 96)
         {
-            var button = new Button { Text = text, Width = 96, Height = 28, Margin = new Padding(2) };
+            var button = new Button
+            {
+                Text = text,
+                Width = width,
+                Height = 30,
+                Margin = new Padding(3, 2, 3, 2),
+                FlatStyle = FlatStyle.Flat,
+                TextImageRelation = TextImageRelation.ImageBeforeText,
+                ImageAlign = ContentAlignment.MiddleLeft,
+                TextAlign = ContentAlignment.MiddleCenter,
+                BackColor = Color.White
+            };
+            button.FlatAppearance.BorderColor = Color.FromArgb(214, 219, 226);
+            button.FlatAppearance.MouseOverBackColor = Color.FromArgb(244, 248, 255);
+            button.FlatAppearance.MouseDownBackColor = Color.FromArgb(231, 241, 255);
+            if (!string.IsNullOrWhiteSpace(imageKey) && uiImages.TryGetValue(imageKey, out var image))
+            {
+                button.Image = image;
+                button.Padding = new Padding(4, 0, 4, 0);
+            }
             button.Click += (s, e) => action();
             panel.Controls.Add(button);
             return button;
+        }
+
+        private Control BuildVaultStatusPanel()
+        {
+            var panel = new FlowLayoutPanel
+            {
+                Dock = DockStyle.Fill,
+                FlowDirection = FlowDirection.LeftToRight,
+                WrapContents = false,
+                Padding = new Padding(4, 10, 10, 0),
+                BackColor = Color.White
+            };
+            vaultStatusIcon = new PictureBox
+            {
+                Width = 18,
+                Height = 18,
+                SizeMode = PictureBoxSizeMode.CenterImage,
+                Margin = new Padding(0, 0, 6, 0)
+            };
+            vaultStatusLabel = new Label
+            {
+                AutoSize = true,
+                TextAlign = ContentAlignment.MiddleLeft,
+                Padding = new Padding(0, 2, 0, 0),
+                Text = "Vault: -"
+            };
+            panel.Controls.Add(vaultStatusIcon);
+            panel.Controls.Add(vaultStatusLabel);
+            return panel;
+        }
+
+        private void LoadUiImages()
+        {
+            uiImages = new Dictionary<string, Image>(StringComparer.OrdinalIgnoreCase);
+            navigationImages = null;
+            AddIconResource("New", "new.ico");
+            AddIconResource("Add", "add.ico");
+            AddIconResource("Open", "open.ico");
+            AddIconResource("Save", "save.ico");
+            AddIconResource("SaveAs", "save_as.ico");
+            AddIconResource("Validate", "validate.ico");
+            AddIconResource("Export", "export.ico");
+            AddIconResource("Import", "import.ico");
+            AddIconResource("ImportExport", "imp-exp.ico");
+            AddIconResource("Reset", "reset_view.ico");
+            AddIconResource("Apply", "apply.ico");
+            AddIconResource("Edit", "edit.ico");
+            AddIconResource("Delete", "delete.ico");
+            AddIconResource("FilesAdd", "files-add.ico");
+            AddIconResource("FilesRemove", "files-remove.ico");
+            AddIconResource("SelectAll", "select-all.ico");
+            AddIconResource("SelectNone", "select-none.ico");
+            AddIconResource("Project", "home.ico");
+            AddIconResource("Settings", "settings.ico");
+            AddIconResource("Variables", "vars.ico");
+            AddIconResource("Services", "service.ico");
+            AddIconResource("Environments", "env.ico");
+            AddIconResource("Scope", "scope.ico");
+            AddIconResource("Key", "key.ico");
+            AddIconResource("Lock", "lock.ico");
+            AddIconResource("Unlock", "unlocked.ico");
+            AddIconResource("Locked", "locked.ico");
+            AddIconResource("VaultOpen", "vault-decrypted.ico");
+            AddIconResource("VaultEncrypted", "vault-encrypted.ico");
+            AddIconResource("VaultSecrets", "vault-secrets-only.ico");
+            AddIconResource("VaultMasked", "vault-masked.ico");
+            AddIconResource("Info", "info.ico");
+            AddIconResource("Warning", "warning.ico");
+            AddIconResource("Validation", "report.ico");
+
+            if (uiImages.Count == 0) return;
+            navigationImages = new ImageList { ColorDepth = ColorDepth.Depth32Bit, ImageSize = new Size(16, 16) };
+            foreach (var pair in uiImages)
+            {
+                navigationImages.Images.Add(pair.Key, pair.Value);
+            }
+        }
+
+        private void AddIconResource(string key, string fileName)
+        {
+            using (var stream = OpenEmbeddedIcon(fileName))
+            {
+                if (stream != null)
+                {
+                    uiImages[key] = IconToBitmap(stream);
+                    return;
+                }
+            }
+
+            var filePath = ResolveIconFilePath(fileName);
+            if (filePath == null) return;
+            using (var icon = new Icon(filePath, new Size(18, 18)))
+            {
+                uiImages[key] = icon.ToBitmap();
+            }
+        }
+
+        private static Stream OpenEmbeddedIcon(string fileName)
+        {
+            var assembly = Assembly.GetExecutingAssembly();
+            var resourceName = assembly.GetManifestResourceNames()
+                .FirstOrDefault(n => n.EndsWith(".Assets.icons." + fileName, StringComparison.OrdinalIgnoreCase));
+            return resourceName == null ? null : assembly.GetManifestResourceStream(resourceName);
+        }
+
+        private static Bitmap IconToBitmap(Stream stream)
+        {
+            using (var icon = new Icon(stream, new Size(18, 18)))
+            {
+                return icon.ToBitmap();
+            }
+        }
+
+        private static string ResolveIconFilePath(string fileName)
+        {
+            var baseDir = AppDomain.CurrentDomain.BaseDirectory;
+            var candidates = new[]
+            {
+                Path.Combine(baseDir, "Assets", "icons", fileName),
+                Path.GetFullPath(Path.Combine(baseDir, "..", "..", "..", "Assets", "icons", fileName)),
+                Path.Combine(Environment.CurrentDirectory, "src", "EnvSecured.WinForms", "Assets", "icons", fileName)
+            };
+            return candidates.FirstOrDefault(File.Exists);
         }
 
         private void ClearVaultKey()
@@ -362,8 +563,8 @@ namespace EnvSecured.WinForms.Forms
             center.Controls.Add(new Label { Text = "Create a new EnvSecured Studio project or open an existing vault file.", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft }, 0, 1);
 
             var buttons = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.LeftToRight, WrapContents = false, Padding = new Padding(0, 6, 0, 6) };
-            var newButton = AddCommand(buttons, "New Project", NewProject);
-            var openButton = AddCommand(buttons, "Open", OpenProject);
+            var newButton = AddCommand(buttons, "New Project", NewProject, "New", 118);
+            var openButton = AddCommand(buttons, "Open", OpenProject, "Open", 96);
             newButton.Width = 120;
             openButton.Width = 120;
             newButton.Height = 28;
@@ -528,17 +729,40 @@ namespace EnvSecured.WinForms.Forms
         private void RefreshNavigation()
         {
             navigation.Nodes.Clear();
-            navigation.Nodes.Add("Project").Nodes.Add("Project");
-            var config = navigation.Nodes.Add("Configuration");
-            config.Nodes.Add("Variables");
-            config.Nodes.Add("Services");
-            config.Nodes.Add("Environments");
-            config.Nodes.Add("Contracts");
-            var io = navigation.Nodes.Add("Import / Export");
-            io.Nodes.Add("Import");
-            io.Nodes.Add("Export");
-            navigation.Nodes.Add("Validation").Nodes.Add("Validation Results");
+            var projectGroup = AddNavigationGroup("Project", "Project");
+            AddNavigationNode(projectGroup, "Project", "Project", "Project");
+            var config = AddNavigationGroup("Configuration", "Settings");
+            AddNavigationNode(config, "Variables", "Variables", "Variables");
+            AddNavigationNode(config, "Services", "Services", "Services");
+            AddNavigationNode(config, "Environments", "Environments", "Environments");
+            AddNavigationNode(config, "Scope", "Scope", "Scope");
+            var io = AddNavigationGroup("Import / Export", "ImportExport");
+            AddNavigationNode(io, "Import", "Import", "Import");
+            AddNavigationNode(io, "Export", "Export", "Export");
+            var validationGroup = AddNavigationGroup("Validation", "Validation");
+            AddNavigationNode(validationGroup, "Validation Results", "Validation Results", "Validation");
             navigation.ExpandAll();
+        }
+
+        private TreeNode AddNavigationGroup(string text, string imageKey, string view = null)
+        {
+            var node = navigation.Nodes.Add(text);
+            node.Tag = view;
+            SetNavigationNodeImage(node, imageKey);
+            return node;
+        }
+
+        private void AddNavigationNode(TreeNode parent, string text, string view, string imageKey)
+        {
+            var node = parent.Nodes.Add(text);
+            node.Tag = view;
+            SetNavigationNodeImage(node, imageKey);
+        }
+
+        private static void SetNavigationNodeImage(TreeNode node, string imageKey)
+        {
+            node.ImageKey = imageKey;
+            node.SelectedImageKey = imageKey;
         }
 
         private void RenderCurrentView()
@@ -546,7 +770,7 @@ namespace EnvSecured.WinForms.Forms
             contentPanel.Controls.Clear();
             if (currentView == "Services") RenderServicesView();
             else if (currentView == "Environments") RenderEnvironmentsView();
-            else if (currentView == "Contracts") RenderContractsView();
+            else if (currentView == "Scope" || currentView == "Contracts") RenderScopeView();
             else if (currentView == "Import") RenderImportView();
             else if (currentView == "Export") RenderExportView();
             else if (currentView == "Project") RenderProjectView();
@@ -570,7 +794,7 @@ namespace EnvSecured.WinForms.Forms
                 {
                     Changed();
                 }
-            });
+            }, "Apply", 96);
             buttons.Controls.Add(new Label { Text = "Project Properties", AutoSize = true, Padding = new Padding(12, 7, 0, 0), Font = new Font(Font, FontStyle.Bold) });
 
             var scroll = new Panel { Dock = DockStyle.Fill, AutoScroll = true };
@@ -760,23 +984,23 @@ namespace EnvSecured.WinForms.Forms
             root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
 
             var buttons = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false };
-            AddCommand(buttons, "Apply", () => ApplyExportSettingsFromView());
-            AddCommand(buttons, "Render Files", () =>
+            AddCommand(buttons, "Apply", () => ApplyExportSettingsFromView(), "Apply", 96);
+            AddCommand(buttons, "Export", () =>
             {
                 ApplyExportSettingsFromView();
                 RenderOutputFiles();
-            });
+            }, "Export", 96);
             buttons.Controls.Add(new Label { Text = "Export Settings", AutoSize = true, Padding = new Padding(12, 7, 0, 0), Font = new Font(Font, FontStyle.Bold) });
 
             var body = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 3, Padding = new Padding(0, 8, 16, 0) };
-            body.RowStyles.Add(new RowStyle(SizeType.Absolute, 256));
+            body.RowStyles.Add(new RowStyle(SizeType.Absolute, 352));
             body.RowStyles.Add(new RowStyle(SizeType.Absolute, 36));
             body.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
 
-            var form = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 8, Margin = Padding.Empty };
+            var form = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 11, Margin = Padding.Empty };
             form.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 160));
             form.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-            for (var i = 0; i < 8; i++) form.RowStyles.Add(new RowStyle(SizeType.Absolute, 32));
+            for (var i = 0; i < 11; i++) form.RowStyles.Add(new RowStyle(SizeType.Absolute, 32));
 
             form.Controls.Add(new Label { Text = "Out folder:", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft }, 0, 0);
             var outputRootPanel = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1, Margin = Padding.Empty };
@@ -812,21 +1036,28 @@ namespace EnvSecured.WinForms.Forms
             form.Controls.Add(new CheckBox { Name = "OutputStructuredSingleFileBox", Dock = DockStyle.Left, AutoSize = true, Text = "Single file for TOML / YAML / XML / JSON", Checked = project.Settings.OutputStructuredSingleFile }, 1, 6);
             form.Controls.Add(new Label { Text = "Single file mask:", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft }, 0, 7);
             form.Controls.Add(new TextBox { Name = "OutputStructuredSingleFileMaskBox", Dock = DockStyle.Fill, Text = DefaultIfBlank(project.Settings.OutputStructuredSingleFileMask, @"{project_name}{.ext}") }, 1, 7);
+            form.Controls.Add(new Label { Text = "Export mode:", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft }, 0, 8);
+            var renderMode = new ComboBox { Name = "OutputRenderModeCombo", Dock = DockStyle.Left, Width = 180, DropDownStyle = ComboBoxStyle.DropDownList };
+            renderMode.Items.AddRange(new object[] { "Data files", "Manifest files", "Data + manifest" });
+            renderMode.SelectedItem = GetOutputRenderModeLabel(project.Settings);
+            form.Controls.Add(renderMode, 1, 8);
+            form.Controls.Add(new Label { Text = "Manifest mask:", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft }, 0, 9);
+            form.Controls.Add(new TextBox { Name = "OutputServiceManifestMaskBox", Dock = DockStyle.Fill, Text = DefaultIfBlank(project.Settings.OutputServiceManifestMask, @"apps\{service}\.env.example") }, 1, 9);
+            form.Controls.Add(new Label { Text = "Manifest values:", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft }, 0, 10);
+            var manifestValueMode = new ComboBox { Name = "OutputServiceManifestValueModeCombo", Dock = DockStyle.Left, Width = 180, DropDownStyle = ComboBoxStyle.DropDownList };
+            manifestValueMode.Items.AddRange(new object[] { "Empty", "Demo" });
+            manifestValueMode.SelectedItem = NormalizeManifestValueMode(project.Settings.OutputServiceManifestValueMode);
+            form.Controls.Add(manifestValueMode, 1, 10);
 
             var targetHeader = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1, Margin = Padding.Empty };
             targetHeader.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 160));
             targetHeader.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-            targetHeader.Controls.Add(new Label { Text = "Render matrix:", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft }, 0, 0);
+            targetHeader.Controls.Add(new Label { Text = "Export matrix:", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft }, 0, 0);
             var targetButtons = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false, Margin = Padding.Empty };
-            var selectAllTargets = new Button { Text = "Select All", Width = 90, Height = 26 };
-            var selectNoTargets = new Button { Text = "Select None", Width = 90, Height = 26 };
-            targetButtons.Controls.Add(selectAllTargets);
-            targetButtons.Controls.Add(selectNoTargets);
-            targetHeader.Controls.Add(targetButtons, 1, 0);
-
             var outputTargetGrid = BuildOutputTargetGrid();
-            selectAllTargets.Click += (s, e) => SetOutputTargetGrid(outputTargetGrid, true, true);
-            selectNoTargets.Click += (s, e) => SetOutputTargetGrid(outputTargetGrid, false, true);
+            AddCommand(targetButtons, "Select All", () => SetOutputTargetGrid(outputTargetGrid, true, true), "SelectAll", 108);
+            AddCommand(targetButtons, "Select None", () => SetOutputTargetGrid(outputTargetGrid, false, true), "SelectNone", 116);
+            targetHeader.Controls.Add(targetButtons, 1, 0);
 
             body.Controls.Add(form, 0, 0);
             body.Controls.Add(targetHeader, 0, 1);
@@ -961,6 +1192,9 @@ namespace EnvSecured.WinForms.Forms
             var outputServiceEnvironmentMaskBox = contentPanel.Controls.Find("OutputServiceEnvironmentMaskBox", true).FirstOrDefault() as TextBox;
             var outputStructuredSingleFileBox = contentPanel.Controls.Find("OutputStructuredSingleFileBox", true).FirstOrDefault() as CheckBox;
             var outputStructuredSingleFileMaskBox = contentPanel.Controls.Find("OutputStructuredSingleFileMaskBox", true).FirstOrDefault() as TextBox;
+            var outputRenderModeCombo = contentPanel.Controls.Find("OutputRenderModeCombo", true).FirstOrDefault() as ComboBox;
+            var outputServiceManifestMaskBox = contentPanel.Controls.Find("OutputServiceManifestMaskBox", true).FirstOrDefault() as TextBox;
+            var outputServiceManifestValueModeCombo = contentPanel.Controls.Find("OutputServiceManifestValueModeCombo", true).FirstOrDefault() as ComboBox;
             if (outputFormatCombo == null) return;
 
             project.Settings.OutputRootFolder = outputRootBox?.Text;
@@ -972,11 +1206,55 @@ namespace EnvSecured.WinForms.Forms
             project.Settings.OutputServiceEnvironmentMask = outputServiceEnvironmentMaskBox?.Text;
             project.Settings.OutputStructuredSingleFile = outputStructuredSingleFileBox?.Checked == true;
             project.Settings.OutputStructuredSingleFileMask = outputStructuredSingleFileMaskBox?.Text;
+            SetOutputRenderMode(project.Settings, Convert.ToString(outputRenderModeCombo?.SelectedItem));
+            project.Settings.OutputServiceManifestMask = outputServiceManifestMaskBox?.Text;
+            project.Settings.OutputServiceManifestValueMode = NormalizeManifestValueMode(Convert.ToString(outputServiceManifestValueModeCombo?.SelectedItem));
             SaveOutputTargetsFromView(false);
             if (markChanged)
             {
                 Changed();
             }
+        }
+
+        private static string GetOutputRenderModeLabel(ProjectSettings settings)
+        {
+            var data = settings?.OutputDataFiles != false;
+            var manifest = settings?.OutputServiceManifest == true;
+            if (data && manifest) return "Data + manifest";
+            if (manifest) return "Manifest files";
+            return "Data files";
+        }
+
+        private static void SetOutputRenderMode(ProjectSettings settings, string label)
+        {
+            if (settings == null) return;
+            if (string.Equals(label, "Manifest files", StringComparison.OrdinalIgnoreCase))
+            {
+                settings.OutputDataFiles = false;
+                settings.OutputServiceManifest = true;
+            }
+            else if (string.Equals(label, "Data + manifest", StringComparison.OrdinalIgnoreCase))
+            {
+                settings.OutputDataFiles = true;
+                settings.OutputServiceManifest = true;
+            }
+            else
+            {
+                settings.OutputDataFiles = true;
+                settings.OutputServiceManifest = false;
+            }
+        }
+
+        private static string NormalizeManifestValueMode(string value)
+        {
+            if (string.Equals(value, "Demo", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(value, "Example", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(value, "Placeholder", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(value, "Pattern", StringComparison.OrdinalIgnoreCase))
+            {
+                return "Demo";
+            }
+            return "Empty";
         }
 
         private void SetProjectEncryptionMode(string label)
@@ -1027,7 +1305,7 @@ namespace EnvSecured.WinForms.Forms
             project.Settings = project.Settings ?? new ProjectSettings();
             if (string.IsNullOrWhiteSpace(project.Settings.OutputRootFolder))
             {
-                MessageBox.Show(this, "Set Export -> Out folder before rendering files.", "Render Files", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                MessageBox.Show(this, "Set Export -> Out folder before exporting files.", "Export", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 currentView = "Export";
                 RenderCurrentView();
                 return;
@@ -1043,27 +1321,53 @@ namespace EnvSecured.WinForms.Forms
             if (targets == null || targets.Count == 0) return;
 
             var format = NormalizeOutputFormat(project.Settings.OutputFormat);
-            if (project.Settings.OutputStructuredSingleFile && format != "CONFIG")
+            var rendered = 0;
+            if (project.Settings.OutputDataFiles != false && project.Settings.OutputStructuredSingleFile && format != "CONFIG")
             {
                 var path = BuildStructuredOutputPath();
                 var directory = Path.GetDirectoryName(path);
                 if (!string.IsNullOrWhiteSpace(directory)) Directory.CreateDirectory(directory);
                 File.WriteAllText(path, FormatStructuredOutput(targets, format));
-                MessageBox.Show(this, "Rendered 1 file.", "Render Files");
-                return;
-            }
-
-            var rendered = 0;
-            foreach (var target in targets)
-            {
-                var values = BuildOutputValues(target.Service, target.Environment);
-                var path = BuildOutputPath(target);
-                Directory.CreateDirectory(Path.GetDirectoryName(path));
-                File.WriteAllText(path, FormatOutputValues(values, format));
                 rendered++;
             }
+            else if (project.Settings.OutputDataFiles != false)
+            {
+                foreach (var target in targets)
+                {
+                    var values = BuildOutputValues(target.Service, target.Environment);
+                    var path = BuildOutputPath(target);
+                    Directory.CreateDirectory(Path.GetDirectoryName(path));
+                    File.WriteAllText(path, FormatOutputValues(values, format));
+                    rendered++;
+                }
+            }
 
-            MessageBox.Show(this, $"Rendered {rendered} file(s).", "Render Files");
+            if (project.Settings.OutputServiceManifest)
+            {
+                rendered += RenderServiceManifestFiles(targets);
+            }
+
+            MessageBox.Show(this, $"Exported {rendered} file(s).", "Export");
+        }
+
+        private int RenderServiceManifestFiles(List<OutputTarget> targets)
+        {
+            var rendered = 0;
+            foreach (var service in targets
+                .Select(t => t.Service)
+                .Where(s => s != null)
+                .GroupBy(s => s.Id)
+                .Select(g => g.First())
+                .OrderBy(s => s.SortOrder)
+                .ThenBy(s => s.Name))
+            {
+                var content = BuildServiceManifestContent(service);
+                var path = BuildServiceManifestPath(service);
+                Directory.CreateDirectory(Path.GetDirectoryName(path));
+                File.WriteAllText(path, content);
+                rendered++;
+            }
+            return rendered;
         }
 
         private bool EnsureOutputRootFolderExists(string outputRootFolder)
@@ -1073,7 +1377,7 @@ namespace EnvSecured.WinForms.Forms
             var result = MessageBox.Show(
                 this,
                 "Output folder does not exist. Create it now?" + Environment.NewLine + outputRootFolder,
-                "Render Files",
+                "Export",
                 MessageBoxButtons.YesNo,
                 MessageBoxIcon.Warning);
             if (result != DialogResult.Yes) return false;
@@ -1085,7 +1389,7 @@ namespace EnvSecured.WinForms.Forms
             }
             catch (Exception ex)
             {
-                MessageBox.Show(this, "Could not create output folder." + Environment.NewLine + ex.Message, "Render Files", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                MessageBox.Show(this, "Could not create output folder." + Environment.NewLine + ex.Message, "Export", MessageBoxButtons.OK, MessageBoxIcon.Error);
                 return false;
             }
         }
@@ -1108,7 +1412,6 @@ namespace EnvSecured.WinForms.Forms
                 grid.Columns.Add(new DataGridViewCheckBoxColumn { Name = "env_" + env.Id, HeaderText = env.Name, Tag = env });
             }
 
-            AddOutputTargetRow(grid, null);
             foreach (var service in project.Services.OrderBy(s => s.SortOrder))
             {
                 AddOutputTargetRow(grid, service);
@@ -1120,6 +1423,7 @@ namespace EnvSecured.WinForms.Forms
             };
             grid.CellValueChanged += (s, e) =>
             {
+                if (suppressOutputTargetGridEvents) return;
                 if (e.RowIndex < 0 || e.ColumnIndex < 0) return;
                 if (grid.Columns[e.ColumnIndex].Name == "Service") return;
                 SaveOutputTargetsFromGrid(grid, true);
@@ -1132,21 +1436,32 @@ namespace EnvSecured.WinForms.Forms
             var rowIndex = grid.Rows.Add();
             var row = grid.Rows[rowIndex];
             row.Tag = service;
-            row.Cells["Service"].Value = service?.Name ?? "Global service";
+            row.Cells["Service"].Value = service.Name;
             foreach (DataGridViewColumn column in grid.Columns)
             {
-                if (column.Name != "Service") row.Cells[column.Name].Value = IsOutputTargetEnabled(service?.Id, (column.Tag as EnvironmentModel)?.Id);
+                if (column.Name != "Service") row.Cells[column.Name].Value = IsOutputTargetEnabled(service.Id, (column.Tag as EnvironmentModel)?.Id);
             }
         }
 
         private void SetOutputTargetGrid(DataGridView grid, bool value, bool persist)
         {
-            foreach (DataGridViewRow row in grid.Rows)
+            suppressOutputTargetGridEvents = true;
+            grid.SuspendLayout();
+            try
             {
-                foreach (DataGridViewColumn column in grid.Columns)
+                foreach (DataGridViewRow row in grid.Rows)
                 {
-                    if (column.Name != "Service") row.Cells[column.Name].Value = value;
+                    foreach (DataGridViewColumn column in grid.Columns)
+                    {
+                        if (column.Name != "Service") row.Cells[column.Name].Value = value;
+                    }
                 }
+            }
+            finally
+            {
+                suppressOutputTargetGridEvents = false;
+                grid.ResumeLayout();
+                grid.Invalidate();
             }
 
             if (persist) SaveOutputTargetsFromGrid(grid, true);
@@ -1198,13 +1513,13 @@ namespace EnvSecured.WinForms.Forms
         {
             SaveOutputTargetsFromView(false);
             var result = new List<OutputTarget>();
-            var services = new ServiceModel[] { null }.Concat(project.Services.OrderBy(s => s.SortOrder)).ToList();
+            var services = project.Services.OrderBy(s => s.SortOrder).ToList();
             var environments = new EnvironmentModel[] { null }.Concat(project.Environments.OrderBy(e => e.SortOrder)).ToList();
             foreach (var service in services)
             {
                 foreach (var environment in environments)
                 {
-                    if (IsOutputTargetEnabled(service?.Id, environment?.Id))
+                    if (IsOutputTargetEnabled(service.Id, environment?.Id))
                     {
                         result.Add(new OutputTarget(service, environment));
                     }
@@ -1213,7 +1528,7 @@ namespace EnvSecured.WinForms.Forms
 
             if (result.Count == 0)
             {
-                MessageBox.Show(this, "No render targets selected.", "Render Files", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                MessageBox.Show(this, "No export targets selected.", "Export", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             }
 
             return result;
@@ -1231,6 +1546,30 @@ namespace EnvSecured.WinForms.Forms
                 .OrderBy(x => x.Variable.SortOrder)
                 .ThenBy(x => x.Variable.Key)
                 .ToDictionary(x => x.Variable.Key, x => x.Value ?? string.Empty);
+        }
+
+        private string BuildServiceManifestContent(ServiceModel service)
+        {
+            var mode = NormalizeManifestValueMode(project.Settings.OutputServiceManifestValueMode);
+            return string.Join(Environment.NewLine, ProjectService.GetVariablesUsedByService(project, service.Id)
+                .Select(v => ManifestLine(v, mode)));
+        }
+
+        private static string ManifestLine(VariableDefinitionModel variable, string mode)
+        {
+            if (!string.Equals(mode, "Demo", StringComparison.OrdinalIgnoreCase))
+            {
+                return variable.Key + "=";
+            }
+
+            var line = variable.Key + "=" + (variable.DemoValue ?? string.Empty);
+            var comment = SingleLineComment(variable.DemoComment);
+            return string.IsNullOrWhiteSpace(comment) ? line : line + " # " + comment;
+        }
+
+        private static string SingleLineComment(string value)
+        {
+            return (value ?? string.Empty).Replace("\r", " ").Replace("\n", " ").Trim();
         }
 
         private string BuildOutputPath(OutputTarget target)
@@ -1256,6 +1595,13 @@ namespace EnvSecured.WinForms.Forms
             return Path.Combine(ResolveOutputRootFolder(project.Settings.OutputRootFolder), relative);
         }
 
+        private string BuildServiceManifestPath(ServiceModel service)
+        {
+            var relative = ApplyOutputMaskPlaceholders(DefaultIfBlank(project.Settings.OutputServiceManifestMask, @"apps\{service}\.env.example"), string.Empty, ExportServiceName(service, "CONFIG", true), string.Empty)
+                .TrimStart('\\', '/');
+            return Path.Combine(ResolveOutputRootFolder(project.Settings.OutputRootFolder), relative);
+        }
+
         private string ResolveOutputRootFolder(string outputRootFolder)
         {
             if (string.IsNullOrWhiteSpace(outputRootFolder) || Path.IsPathRooted(outputRootFolder))
@@ -1272,13 +1618,28 @@ namespace EnvSecured.WinForms.Forms
         private string ApplyOutputMaskPlaceholders(string mask, string extension, string serviceName, string environmentName)
         {
             var projectName = SafeOutputName(DefaultIfBlank(project.ProjectName, project.ProjectId));
-            return (mask ?? string.Empty)
+            var result = (mask ?? string.Empty)
                 .Replace("{project_name}", projectName)
                 .Replace("{project}", projectName)
                 .Replace("{service}", serviceName ?? string.Empty)
                 .Replace("{env}", environmentName ?? string.Empty)
                 .Replace("{.ext}", extension)
                 .Replace("{ext}", extension.TrimStart('.'));
+            return NormalizeRelativeOutputMask(result);
+        }
+
+        private static string NormalizeRelativeOutputMask(string value)
+        {
+            value = value ?? string.Empty;
+            while (value.Contains(@"\\"))
+            {
+                value = value.Replace(@"\\", @"\");
+            }
+            while (value.Contains("//"))
+            {
+                value = value.Replace("//", "/");
+            }
+            return value;
         }
 
         private static string SafeOutputName(string value)
@@ -1506,12 +1867,26 @@ namespace EnvSecured.WinForms.Forms
         {
             if (service == null) return string.Empty;
             format = NormalizeOutputFormat(format);
-            if (format == "CONFIG") return DefaultIfBlank(service.ConfigName, pathName ? DefaultIfBlank(service.OutputFolder, service.Name) : service.Name);
+            if (format == "CONFIG")
+            {
+                return DefaultIfBlank(service.ConfigName, pathName ? OutputFolderPathSegment(service) : service.Name);
+            }
             if (format == "TOML") return DefaultIfBlank(service.TomlName, service.Name);
             if (format == "YAML") return DefaultIfBlank(service.YamlName, service.Name);
             if (format == "XML") return DefaultIfBlank(service.XmlName, service.Name);
             if (format == "JSON") return DefaultIfBlank(service.JsonName, service.Name);
             return service.Name;
+        }
+
+        private static string OutputFolderPathSegment(ServiceModel service)
+        {
+            if (service == null) return string.Empty;
+            return service.OutputFolder == null ? service.Name : service.OutputFolder.Trim();
+        }
+
+        private static string NormalizeOutputFolderKey(string value)
+        {
+            return (value ?? string.Empty).Trim().Trim('\\', '/');
         }
 
         private static string ExportEnvironmentName(EnvironmentModel environment, string format)
@@ -1594,22 +1969,42 @@ namespace EnvSecured.WinForms.Forms
             return new JavaScriptSerializer().Serialize(value ?? string.Empty);
         }
 
+        private Control BuildViewHeader(string title, string description)
+        {
+            var panel = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, BackColor = Color.White, Padding = new Padding(0, 2, 0, 0) };
+            panel.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+            panel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            panel.Controls.Add(new Label
+            {
+                Text = title,
+                AutoSize = true,
+                Font = new Font(Font.FontFamily, 15f, FontStyle.Bold),
+                Padding = new Padding(0, 4, 12, 0)
+            }, 0, 0);
+            panel.Controls.Add(new Label
+            {
+                Text = description,
+                Dock = DockStyle.Fill,
+                ForeColor = Color.FromArgb(91, 99, 112),
+                TextAlign = ContentAlignment.MiddleLeft,
+                AutoEllipsis = true
+            }, 1, 0);
+            return panel;
+        }
+
         private void RenderVariablesView()
         {
-            var root = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 3 };
-            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 38));
+            var root = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 4, Padding = new Padding(8, 8, 8, 0), BackColor = Color.White };
             root.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
+            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
+            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 36));
             root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+            root.Controls.Add(BuildViewHeader("Variables", "Manage configuration variables and their usage across services and environments."), 0, 0);
 
-            var buttons = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false };
-            AddCommand(buttons, "Add Variable", AddVariable);
-            AddCommand(buttons, "Edit Variable", EditVariable);
-            AddCommand(buttons, "Delete Variable", DeleteVariable);
-            AddCommand(buttons, "Set Value", SetValue);
-            AddCommand(buttons, "Delete Value", DeleteValue);
-            AddCommand(buttons, "Set Environment", SetVariableEnvironmentFilter);
-            AddCommand(buttons, "Set Service", SetVariableServiceFilter);
-            AddCommand(buttons, "Contracts Matrix", () => { currentView = "Contracts"; RenderCurrentView(); });
+            var buttons = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false, Padding = new Padding(0, 2, 0, 2) };
+            AddCommand(buttons, "Add Variable", AddVariable, "Add", 118);
+            AddCommand(buttons, "Edit Variable", EditVariable, "Edit", 118);
+            AddCommand(buttons, "Delete Variable", DeleteVariable, "Delete", 132);
             showSecretsCheckBox = new CheckBox { Text = "Show Secrets", AutoSize = true, Padding = new Padding(12, 6, 0, 0) };
             showSecretsCheckBox.CheckedChanged += (s, e) => RefreshVariableDisplayPreservingSelection(root);
             buttons.Controls.Add(showSecretsCheckBox);
@@ -1620,16 +2015,9 @@ namespace EnvSecured.WinForms.Forms
                 RefreshVariableDisplayPreservingSelection(root);
             };
             buttons.Controls.Add(calculatedValuesCheckBox);
-            matrixLightColorsCheckBox = new CheckBox { Text = "Light Matrix Colors", Checked = recentProjectsService.LoadBooleanPreference(PreferenceLightMatrixColors, false), AutoSize = true, Padding = new Padding(8, 6, 0, 0) };
-            matrixLightColorsCheckBox.CheckedChanged += (s, e) =>
-            {
-                recentProjectsService.SaveBooleanPreference(PreferenceLightMatrixColors, matrixLightColorsCheckBox.Checked);
-                RefreshVariableDetails(root);
-            };
-            buttons.Controls.Add(matrixLightColorsCheckBox);
-            root.Controls.Add(buttons, 0, 0);
+            root.Controls.Add(buttons, 0, 1);
 
-            root.Controls.Add(BuildVariableFilters(), 0, 1);
+            root.Controls.Add(BuildVariableFilters(), 0, 2);
             mainGrid = BuildVariablesGrid(root);
             mainGrid.SelectionChanged += (s, e) => RefreshVariableDetails(root);
 
@@ -1642,11 +2030,12 @@ namespace EnvSecured.WinForms.Forms
             };
             split.Panel1.Controls.Add(mainGrid);
             split.Panel2.Controls.Add(BuildVariableDetails());
-            root.Controls.Add(split, 0, 2);
+            root.Controls.Add(split, 0, 3);
             contentPanel.Controls.Add(root);
             AttachSplitterRatioPersistence(split, "VariablesVertical");
-            split.HandleCreated += (s, e) => BeginInvoke(new Action(() => RestoreSplitterRatio(split, "VariablesVertical", 0.72)));
+            RestoreSplitterRatioWhenReady(split, "VariablesVertical", 0.72);
             RefreshVariableGrid();
+            RefreshVariableDetails(root);
         }
 
         private void AttachSplitterRatioPersistence(SplitContainer split, string splitterKey)
@@ -1660,9 +2049,39 @@ namespace EnvSecured.WinForms.Forms
             SetSafeSplitterDistance(split, ratio);
         }
 
+        private void RestoreSplitterRatioWhenReady(SplitContainer split, string splitterKey, double defaultRatio)
+        {
+            splittersRestoring.Add(split);
+            EventHandler handler = null;
+            handler = (s, e) =>
+            {
+                if (split.IsDisposed || !split.IsHandleCreated) return;
+                split.BeginInvoke(new Action(() =>
+                {
+                    if (split.IsDisposed || !split.IsHandleCreated) return;
+                    if (!TryRestoreSplitterRatio(split, splitterKey, defaultRatio)) return;
+                    split.HandleCreated -= handler;
+                    split.SizeChanged -= handler;
+                    splittersRestoring.Remove(split);
+                }));
+            };
+            split.Disposed += (s, e) => splittersRestoring.Remove(split);
+            split.HandleCreated += handler;
+            split.SizeChanged += handler;
+            if (split.IsHandleCreated) handler(split, EventArgs.Empty);
+        }
+
+        private bool TryRestoreSplitterRatio(SplitContainer split, string splitterKey, double defaultRatio)
+        {
+            var available = SplitterAvailableSize(split);
+            if (available <= split.Panel1MinSize + split.Panel2MinSize) return false;
+            var ratio = recentProjectsService.LoadSplitterRatio(splitterKey) ?? defaultRatio;
+            return SetSafeSplitterDistance(split, ratio);
+        }
+
         private void SaveSplitterRatio(SplitContainer split, string splitterKey)
         {
-            if (suppressSplitterPersistence || split.IsDisposed) return;
+            if (suppressSplitterPersistence || splittersRestoring.Contains(split) || split.IsDisposed) return;
             var available = SplitterAvailableSize(split);
             if (available <= 0) return;
             var ratio = split.SplitterDistance / (double)available;
@@ -1670,11 +2089,11 @@ namespace EnvSecured.WinForms.Forms
             recentProjectsService.SaveSplitterRatio(splitterKey, ratio);
         }
 
-        private void SetSafeSplitterDistance(SplitContainer split, double ratio)
+        private bool SetSafeSplitterDistance(SplitContainer split, double ratio)
         {
-            if (split.IsDisposed) return;
+            if (split.IsDisposed) return false;
             var available = SplitterAvailableSize(split);
-            if (available <= split.Panel1MinSize + split.Panel2MinSize) return;
+            if (available <= split.Panel1MinSize + split.Panel2MinSize) return false;
             var min = split.Panel1MinSize;
             var max = available - split.Panel2MinSize;
             var desired = (int)(available * Math.Max(0.05, Math.Min(0.95, ratio)));
@@ -1687,6 +2106,7 @@ namespace EnvSecured.WinForms.Forms
             {
                 suppressSplitterPersistence = false;
             }
+            return true;
         }
 
         private static int SplitterAvailableSize(SplitContainer split)
@@ -1696,34 +2116,43 @@ namespace EnvSecured.WinForms.Forms
 
         private Control BuildVariableFilters()
         {
-            var panel = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 6, Padding = new Padding(0, 4, 0, 4) };
-            panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 92));
-            panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 160));
-            panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 65));
-            panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 160));
+            var panel = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 8, Padding = new Padding(0, 4, 0, 4) };
+            panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 86));
+            panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 130));
+            panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 50));
+            panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 130));
+            panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 52));
+            panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 130));
             panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 55));
             panel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
 
             var environments = new[] { new ScopeSelectorItem(null, "Global") }
                 .Concat(project.Environments.OrderBy(e => e.SortOrder).Select(e => new ScopeSelectorItem(e.Id, e.Name)))
                 .ToList();
-            var services = new[] { new ScopeSelectorItem(null, "All services") }
+            var owners = new[] { new ScopeSelectorItem(null, "All owners") }
+                .Concat(project.Services.OrderBy(s => s.SortOrder).Select(s => new ScopeSelectorItem(s.Id, s.Name)))
+                .ToList();
+            var scopes = new[] { new ScopeSelectorItem(null, "All scopes") }
                 .Concat(project.Services.OrderBy(s => s.SortOrder).Select(s => new ScopeSelectorItem(s.Id, s.Name)))
                 .ToList();
 
             environmentCombo = new ComboBox { Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDownList, DataSource = environments, DisplayMember = "Name" };
-            serviceCombo = new ComboBox { Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDownList, DataSource = services, DisplayMember = "Name" };
+            ownerFilterCombo = new ComboBox { Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDownList, DataSource = owners, DisplayMember = "Name" };
+            scopeFilterCombo = new ComboBox { Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDownList, DataSource = scopes, DisplayMember = "Name" };
             searchBox = new TextBox { Dock = DockStyle.Fill };
             environmentCombo.SelectedIndexChanged += (s, e) => RefreshVariableGrid();
-            serviceCombo.SelectedIndexChanged += (s, e) => RefreshVariableGrid();
+            ownerFilterCombo.SelectedIndexChanged += (s, e) => RefreshVariableGrid();
+            scopeFilterCombo.SelectedIndexChanged += (s, e) => RefreshVariableGrid();
             searchBox.TextChanged += (s, e) => RefreshVariableGrid();
 
             panel.Controls.Add(new Label { Text = "Environment:", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft }, 0, 0);
             panel.Controls.Add(environmentCombo, 1, 0);
-            panel.Controls.Add(new Label { Text = "Service:", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft }, 2, 0);
-            panel.Controls.Add(serviceCombo, 3, 0);
-            panel.Controls.Add(new Label { Text = "Search:", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft }, 4, 0);
-            panel.Controls.Add(searchBox, 5, 0);
+            panel.Controls.Add(new Label { Text = "Owner:", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft }, 2, 0);
+            panel.Controls.Add(ownerFilterCombo, 3, 0);
+            panel.Controls.Add(new Label { Text = "Scope:", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft }, 4, 0);
+            panel.Controls.Add(scopeFilterCombo, 5, 0);
+            panel.Controls.Add(new Label { Text = "Search:", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft }, 6, 0);
+            panel.Controls.Add(searchBox, 7, 0);
             return panel;
         }
 
@@ -1737,7 +2166,13 @@ namespace EnvSecured.WinForms.Forms
                 Panel2MinSize = 50
             };
             panel.Panel1.Controls.Add(new GroupBox { Dock = DockStyle.Fill, Text = "Selected Variable", Name = "variableInfo" });
-            panel.Panel2.Controls.Add(new DataGridView
+            var matrixPanel = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 2, ColumnCount = 1 };
+            matrixPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
+            matrixPanel.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+            var matrixHeader = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false };
+            matrixHeader.Controls.Add(new Label { Text = "Service Values", AutoSize = true, Padding = new Padding(0, 7, 10, 0), Font = new Font(Font, FontStyle.Bold) });
+            matrixLightColorsCheckBox = new CheckBox { Text = "Light matrix colors", Checked = recentProjectsService.LoadBooleanPreference(PreferenceLightMatrixColors, false), AutoSize = true, Padding = new Padding(0, 5, 0, 0) };
+            var matrix = new DataGridView
             {
                 Dock = DockStyle.Fill,
                 Name = "variableMatrix",
@@ -1747,13 +2182,25 @@ namespace EnvSecured.WinForms.Forms
                 RowHeadersVisible = false,
                 AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill,
                 SelectionMode = DataGridViewSelectionMode.CellSelect
-            });
+            };
+            matrixLightColorsCheckBox.CheckedChanged += (s, e) =>
+            {
+                recentProjectsService.SaveBooleanPreference(PreferenceLightMatrixColors, matrixLightColorsCheckBox.Checked);
+                var variable = GetSelectedVariable();
+                if (variable != null) BuildVariableServiceEnvironmentMatrix(matrix, variable);
+            };
+            AttachColumnWidthPersistence(matrix, "VariableMatrix");
+            matrixHeader.Controls.Add(matrixLightColorsCheckBox);
+            matrixPanel.Controls.Add(matrixHeader, 0, 0);
+            matrixPanel.Controls.Add(matrix, 0, 1);
+            panel.Panel2.Controls.Add(matrixPanel);
             AttachSplitterRatioPersistence(panel, "VariableDetailsMatrix");
-            panel.HandleCreated += (s, e) => BeginInvoke(new Action(() =>
+            panel.HandleCreated += (s, e) => panel.BeginInvoke(new Action(() =>
             {
                 ApplyVariableDetailsMinSizes(panel);
-                RestoreSplitterRatio(panel, "VariableDetailsMatrix", 0.25);
             }));
+            panel.SizeChanged += (s, e) => ApplyVariableDetailsMinSizes(panel);
+            RestoreSplitterRatioWhenReady(panel, "VariableDetailsMatrix", 0.25);
             return panel;
         }
 
@@ -1768,12 +2215,11 @@ namespace EnvSecured.WinForms.Forms
 
         private void RefreshVariableDetails(TableLayoutPanel root)
         {
-            if (root.RowCount < 3) return;
-            var outerSplit = root.GetControlFromPosition(0, 2) as SplitContainer;
+            var outerSplit = root.Controls.OfType<SplitContainer>().FirstOrDefault();
             var details = outerSplit?.Panel2.Controls.OfType<SplitContainer>().FirstOrDefault();
             if (details == null) return;
             var info = details.Panel1.Controls.OfType<GroupBox>().FirstOrDefault();
-            var matrix = details.Panel2.Controls.OfType<DataGridView>().FirstOrDefault(g => g.Name == "variableMatrix");
+            var matrix = details.Panel2.Controls.Find("variableMatrix", true).OfType<DataGridView>().FirstOrDefault();
             if (info == null || matrix == null) return;
 
             info.Controls.Clear();
@@ -1797,7 +2243,7 @@ namespace EnvSecured.WinForms.Forms
             info.Controls.Add(new Label
             {
                 Dock = DockStyle.Fill,
-                Text = $"Display: {variable.DisplayName}\r\nType: {variable.Type}\r\nSecret: {(variable.IsSecret ? "Yes" : "No")}\r\nAllow shared secret: {(variable.AllowSharedSecret ? "Yes" : "No")}\r\nAllow null: {(variable.AllowNull ? "Yes" : "No")}\r\nAllow blank: {(variable.AllowBlank ? "Yes" : "No")}\r\nEffective: {DisplayValue(variable, effectiveValue)}\r\nSource: {source}",
+                Text = $"Display: {variable.DisplayName}\r\nOwner: {OwnerDisplayName(variable)}\r\nType: {variable.Type}\r\nGroup: {DisplayInfoValue(variable.GroupName)}\r\nDemo value: {DisplayInfoValue(variable.DemoValue)}\r\nDemo comment: {DisplayInfoValue(variable.DemoComment)}\r\nDescription: {DisplayInfoValue(variable.Description)}\r\nSecret: {(variable.IsSecret ? "Yes" : "No")}\r\nAllow shared secret: {(variable.AllowSharedSecret ? "Yes" : "No")}\r\nAllow null: {(variable.AllowNull ? "Yes" : "No")}\r\nAllow blank: {(variable.AllowBlank ? "Yes" : "No")}\r\nEffective: {DisplayValue(variable, effectiveValue)}\r\nSource: {source}",
                 Padding = new Padding(12)
             });
 
@@ -1824,7 +2270,10 @@ namespace EnvSecured.WinForms.Forms
                 matrix.CellMouseDown += VariableMatrixCellMouseDown;
                 var valueColors = BuildVariableMatrixValueColors(variable);
                 matrix.Columns.Add(new DataGridViewTextBoxColumn { Name = "Service", HeaderText = "Service", ReadOnly = true, FillWeight = 120 });
-                matrix.Columns.Add(new DataGridViewCheckBoxColumn { Name = "Use", HeaderText = "Use", FillWeight = 45 });
+                matrix.Columns.Add(new DataGridViewCheckBoxColumn { Name = "Owner", HeaderText = "Owner", FillWeight = 45 });
+                matrix.Columns.Add(new DataGridViewCheckBoxColumn { Name = "Visible", HeaderText = "Scope", FillWeight = 45 });
+                matrix.Columns.Add(new DataGridViewCheckBoxColumn { Name = "Override", HeaderText = "Override", FillWeight = 55 });
+                matrix.Columns.Add(new DataGridViewCheckBoxColumn { Name = "Use", HeaderText = "Export", FillWeight = 45 });
                 matrix.Columns.Add(new DataGridViewTextBoxColumn
                 {
                     Name = "env_global",
@@ -1845,11 +2294,11 @@ namespace EnvSecured.WinForms.Forms
                     });
                 }
 
-                AddVariableMatrixRow(matrix, variable, null, valueColors);
                 foreach (var service in project.Services.OrderBy(s => s.SortOrder))
                 {
                     AddVariableMatrixRow(matrix, variable, service, valueColors);
                 }
+                RestoreColumnWidths(matrix, "VariableMatrix");
             }
             finally
             {
@@ -1890,12 +2339,23 @@ namespace EnvSecured.WinForms.Forms
             row.Cells["Service"].Value = service?.Name ?? "Global service";
             row.Tag = service?.Id;
             row.Cells["Service"].Style.BackColor = SystemColors.ControlLight;
-            row.Cells["Use"].Value = service != null && IsVariableUsedByService(variable.Id, service.Id);
-            row.Cells["Use"].ReadOnly = service == null;
-            row.Cells["Use"].Style.BackColor = service == null ? SystemColors.ControlLight : Color.White;
+            var isOwner = SameNullable(variable.OwnerServiceId, service?.Id);
+            var visible = service == null || ProjectService.IsVariableVisibleToService(project, variable, service.Id);
+            row.Cells["Owner"].Value = isOwner;
+            row.Cells["Owner"].ReadOnly = false;
+            row.Cells["Owner"].Style.BackColor = Color.White;
+            row.Cells["Visible"].Value = service == null ? isOwner : ProjectService.IsVariableVisibleToService(project, variable, service.Id);
+            row.Cells["Visible"].ReadOnly = service == null || isOwner;
+            row.Cells["Visible"].Style.BackColor = row.Cells["Visible"].ReadOnly ? SystemColors.ControlLight : Color.White;
+            row.Cells["Override"].Value = service == null ? isOwner : ProjectService.CanOverrideVariableForService(project, variable, service.Id);
+            row.Cells["Override"].ReadOnly = service == null || isOwner || !visible;
+            row.Cells["Override"].Style.BackColor = row.Cells["Override"].ReadOnly ? SystemColors.ControlLight : Color.White;
+            row.Cells["Use"].Value = service != null && visible && IsVariableUsedByService(variable.Id, service.Id);
+            row.Cells["Use"].ReadOnly = service == null || !visible;
+            row.Cells["Use"].Style.BackColor = row.Cells["Use"].ReadOnly ? SystemColors.ControlLight : Color.White;
             foreach (DataGridViewColumn column in matrix.Columns)
             {
-                if (column.Name == "Service" || column.Name == "Use") continue;
+                if (column.Name == "Service" || column.Name == "Owner" || column.Name == "Use" || column.Name == "Visible" || column.Name == "Override") continue;
                 var environment = column.Tag as EnvironmentModel;
                 var state = ResolveVariableMatrixCell(variable, service, environment, valueColors);
                 var cell = row.Cells[column.Name];
@@ -1913,7 +2373,7 @@ namespace EnvSecured.WinForms.Forms
         private MatrixCellState ResolveVariableMatrixCell(VariableDefinitionModel variable, ServiceModel service, EnvironmentModel environment, Dictionary<string, Color> valueColors)
         {
             var usedByService = service == null || IsVariableUsedByService(variable.Id, service.Id);
-            if (!usedByService)
+            if (service != null && !ProjectService.IsVariableVisibleToService(project, variable, service.Id))
             {
                 return MatrixCellState.Empty("-");
             }
@@ -1931,24 +2391,38 @@ namespace EnvSecured.WinForms.Forms
                 ? mappedColor
                 : Color.White;
             var direct =
-                (service == null && environment == null && effective.SourceScope == ValueScope.Global) ||
-                (service == null && environment != null && effective.SourceScope == ValueScope.Environment) ||
-                (service != null && environment == null && effective.SourceScope == ValueScope.Service) ||
-                (service != null && environment != null && effective.SourceScope == ValueScope.ServiceEnvironment);
-            var inherited = effective.SourceScope == ValueScope.Global ||
-                effective.SourceScope == ValueScope.Environment ||
-                effective.SourceScope == ValueScope.Service;
+                effective.SourceScope == scope &&
+                SameNullable(effective.SourceServiceId, service?.Id) &&
+                SameNullable(effective.SourceEnvironmentId, environment?.Id);
+            var inherited = !direct;
+            var contractNote = usedByService ? string.Empty : "Not in service contract. ";
             if (direct)
             {
-                return MatrixCellState.Direct(display, color, MatrixLightColorMode(), "Defined at " + effective.SourceScope);
+                return MatrixCellState.Direct(display, color, MatrixLightColorMode(), contractNote + "Defined at " + MatrixSourceLabel(effective));
             }
 
             if (inherited)
             {
-                return MatrixCellState.Inherited(display, color, MatrixLightColorMode(), "Inherited from " + effective.SourceScope);
+                return MatrixCellState.Inherited(display, color, MatrixLightColorMode(), contractNote + "Inherited from " + MatrixSourceLabel(effective));
             }
 
             return MatrixCellState.Empty("-");
+        }
+
+        private string MatrixSourceLabel(EffectiveValue effective)
+        {
+            if (effective == null || effective.SourceScope == null) return string.Empty;
+            var service = string.IsNullOrWhiteSpace(effective.SourceServiceId)
+                ? null
+                : project.Services.FirstOrDefault(s => s.Id == effective.SourceServiceId)?.Name ?? effective.SourceServiceId;
+            var environment = string.IsNullOrWhiteSpace(effective.SourceEnvironmentId)
+                ? null
+                : project.Environments.FirstOrDefault(e => e.Id == effective.SourceEnvironmentId)?.Name ?? effective.SourceEnvironmentId;
+
+            if (service == null && environment == null) return "Global";
+            if (service == null) return "Environment " + environment;
+            if (environment == null) return "Service " + service;
+            return "Service " + service + " / Environment " + environment;
         }
 
         private static ValueScope MatrixScope(string serviceId, string environmentId)
@@ -1961,7 +2435,7 @@ namespace EnvSecured.WinForms.Forms
 
         private void VariableMatrixCellDoubleClick(object sender, DataGridViewCellEventArgs e)
         {
-            if (e.RowIndex < 0 || e.ColumnIndex <= 1) return;
+            if (e.RowIndex < 0 || e.ColumnIndex <= 4) return;
             var matrix = sender as DataGridView;
             if (matrix == null) return;
             SetVariableMatrixDirectValue(matrix, e.RowIndex, e.ColumnIndex);
@@ -1973,7 +2447,7 @@ namespace EnvSecured.WinForms.Forms
             var matrix = sender as DataGridView;
             if (matrix == null) return;
             SelectGridCell(matrix, e.RowIndex, e.ColumnIndex);
-            var target = e.ColumnIndex > 1 ? MatrixTargetFromCell(matrix, e.RowIndex, e.ColumnIndex) : null;
+            var target = e.ColumnIndex > 4 ? MatrixTargetFromCell(matrix, e.RowIndex, e.ColumnIndex) : null;
             var variable = target?.Variable ?? project?.Variables.FirstOrDefault(v => v.Id == Convert.ToString(matrix.Tag));
             var effective = target == null
                 ? null
@@ -1981,7 +2455,7 @@ namespace EnvSecured.WinForms.Forms
 
             var menu = new ContextMenuStrip();
             menu.Items.Add("Copy Key", null, (s, args) => CopyText(variable?.Key));
-            menu.Items.Add("Copy ${KEY}", null, (s, args) => CopyText(VariablePlaceholder(variable?.Key)));
+            menu.Items.Add("Copy {{KEY}}", null, (s, args) => CopyText(VariablePlaceholder(variable?.Key)));
             menu.Items.Add("Copy Value", null, (s, args) => CopyText(Convert.ToString(matrix.Rows[e.RowIndex].Cells[e.ColumnIndex].Value)));
             menu.Items.Add("Copy Effective Value", null, (s, args) => CopyText(variable == null ? string.Empty : DisplayValue(variable, effective?.Value)));
             if (target != null)
@@ -2006,66 +2480,131 @@ namespace EnvSecured.WinForms.Forms
             if (suppressVariableMatrixEvents) return;
             if (e.RowIndex < 0 || e.ColumnIndex < 0) return;
             var matrix = sender as DataGridView;
-            if (matrix == null || matrix.Columns[e.ColumnIndex].Name != "Use") return;
+            if (matrix == null) return;
+            var changedColumnName = matrix.Columns[e.ColumnIndex].Name;
+            if (changedColumnName != "Owner" && changedColumnName != "Use" && changedColumnName != "Visible" && changedColumnName != "Override") return;
             var variableId = Convert.ToString(matrix.Tag);
             var serviceId = Convert.ToString(matrix.Rows[e.RowIndex].Tag);
-            if (string.IsNullOrWhiteSpace(variableId) || string.IsNullOrWhiteSpace(serviceId)) return;
+            if (string.IsNullOrWhiteSpace(variableId)) return;
             var variable = project.Variables.FirstOrDefault(v => v.Id == variableId);
             if (variable == null) return;
 
-            var enabled = Convert.ToBoolean(matrix.Rows[e.RowIndex].Cells["Use"].Value ?? false);
-            var existing = project.Contracts.FirstOrDefault(c => c.VariableId == variableId && c.ServiceId == serviceId);
-            if (enabled)
+            if (changedColumnName == "Owner")
             {
-                if (existing == null && !HasGlobalValue(variableId))
+                var ownerChecked = Convert.ToBoolean(matrix.Rows[e.RowIndex].Cells["Owner"].Value ?? false);
+                if (!ownerChecked)
                 {
-                    project.Contracts.Add(new VariableContractModel
+                    RefreshAfterVariableMatrixChange(matrix, variable, e.RowIndex, e.ColumnIndex);
+                    return;
+                }
+                var oldOwnerServiceId = variable.OwnerServiceId;
+                if (!SameNullable(oldOwnerServiceId, serviceId))
+                {
+                    var movable = CountMovableOwnerValues(variable.Id, oldOwnerServiceId, serviceId);
+                    if (movable > 0)
                     {
-                        Id = ProjectService.NewId(),
-                        VariableId = variableId,
-                        ServiceId = serviceId,
-                        Required = true,
-                        SortOrder = project.Contracts.Count * 10
-                    });
+                        var answer = MessageBox.Show(
+                            this,
+                            $"Move {movable} owner value(s) to the new owner?",
+                            "Change Owner",
+                            MessageBoxButtons.YesNo,
+                            MessageBoxIcon.Question);
+                        if (answer == DialogResult.Yes)
+                        {
+                            ProjectService.MoveOwnerValues(project, variable.Id, oldOwnerServiceId, serviceId);
+                        }
+                    }
                 }
-                else if (existing != null && existing.Excluded)
+                variable.OwnerServiceId = serviceId;
+                if (!string.IsNullOrWhiteSpace(serviceId))
                 {
-                    project.Contracts.Remove(existing);
+                    var existing = project.Contracts.FirstOrDefault(c => c.VariableId == variableId && c.ServiceId == serviceId);
+                    SetVariableServiceContractFlags(variableId, serviceId, existing != null && !existing.Excluded, true, true);
+                }
+                RefreshAfterVariableMatrixChange(matrix, variable, e.RowIndex, e.ColumnIndex);
+                return;
+            }
+
+            if (string.IsNullOrWhiteSpace(serviceId)) return;
+            var export = Convert.ToBoolean(matrix.Rows[e.RowIndex].Cells["Use"].Value ?? false);
+            var visible = Convert.ToBoolean(matrix.Rows[e.RowIndex].Cells["Visible"].Value ?? false);
+            var allowOverride = Convert.ToBoolean(matrix.Rows[e.RowIndex].Cells["Override"].Value ?? false);
+            var wasVisible = ProjectService.IsVariableVisibleToService(project, variable, serviceId);
+            if (wasVisible && !visible)
+            {
+                var references = CountScopeInterpolationReferences(variable, serviceId);
+                if (references > 0)
+                {
+                    var answer = MessageBox.Show(
+                        this,
+                        $"{variable.Key} is referenced by {references} value(s) in this service scope. Remove it from scope anyway?",
+                        "Scope",
+                        MessageBoxButtons.YesNo,
+                        MessageBoxIcon.Warning);
+                    if (answer != DialogResult.Yes)
+                    {
+                        RefreshAfterVariableMatrixChange(matrix, variable, e.RowIndex, e.ColumnIndex);
+                        return;
+                    }
                 }
             }
-            else if (existing != null)
+            if (!visible)
             {
-                if (HasGlobalValue(variableId))
-                {
-                    existing.Excluded = true;
-                    existing.Required = false;
-                }
-                else
-                {
-                    project.Contracts.Remove(existing);
-                }
+                export = false;
+                allowOverride = false;
             }
-            else if (HasGlobalValue(variableId))
+            SetVariableServiceContractFlags(variableId, serviceId, export, visible, allowOverride);
+
+            RefreshAfterVariableMatrixChange(matrix, variable, e.RowIndex, e.ColumnIndex);
+        }
+
+        private int CountScopeInterpolationReferences(VariableDefinitionModel variable, string serviceId)
+        {
+            if (variable == null || string.IsNullOrWhiteSpace(serviceId)) return 0;
+            var token = VariablePlaceholder(variable.Key);
+            if (string.IsNullOrWhiteSpace(token)) return 0;
+
+            return project.Environments.Select(e => e.Id).Concat(new string[] { null })
+                .SelectMany(environmentId => BuildRawEffectiveValues(serviceId, environmentId))
+                .Where(value => value.Variable.Id != variable.Id && !value.Missing && !string.IsNullOrEmpty(value.Value))
+                .Select(value => value.Value)
+                .Distinct()
+                .Count(value => value.Contains(token));
+        }
+
+        private int CountMovableOwnerValues(string variableId, string oldOwnerServiceId, string newOwnerServiceId)
+        {
+            var before = CloneProject(project);
+            return ProjectService.MoveOwnerValues(before, variableId, oldOwnerServiceId, newOwnerServiceId);
+        }
+
+        private void SetVariableServiceContractFlags(string variableId, string serviceId, bool export, bool visible, bool allowOverride)
+        {
+            var existing = project.Contracts.FirstOrDefault(c => c.VariableId == variableId && c.ServiceId == serviceId);
+            if (existing == null)
             {
-                project.Contracts.Add(new VariableContractModel
+                existing = new VariableContractModel
                 {
                     Id = ProjectService.NewId(),
                     VariableId = variableId,
                     ServiceId = serviceId,
-                    Excluded = true,
-                    Required = false,
                     SortOrder = project.Contracts.Count * 10
-                });
+                };
+                project.Contracts.Add(existing);
             }
 
-            RefreshAfterVariableMatrixChange(matrix, variable, e.RowIndex, e.ColumnIndex);
+            existing.Excluded = !export;
+            existing.Required = export;
+            existing.VisibleToService = visible;
+            existing.AllowOverride = visible && allowOverride;
+            existing.ShareWithOtherServices = visible;
         }
 
         private void VariableMatrixKeyDown(object sender, KeyEventArgs e)
         {
             if (e.KeyCode != Keys.Delete) return;
             var matrix = sender as DataGridView;
-            if (matrix?.CurrentCell == null || matrix.CurrentCell.RowIndex < 0 || matrix.CurrentCell.ColumnIndex <= 1) return;
+            if (matrix?.CurrentCell == null || matrix.CurrentCell.RowIndex < 0 || matrix.CurrentCell.ColumnIndex <= 4) return;
             DeleteVariableMatrixDirectValue(matrix, matrix.CurrentCell.RowIndex, matrix.CurrentCell.ColumnIndex);
             e.Handled = true;
         }
@@ -2074,6 +2613,11 @@ namespace EnvSecured.WinForms.Forms
         {
             var target = MatrixTargetFromCell(matrix, rowIndex, columnIndex);
             if (target == null) return;
+            if (!ProjectService.CanOverrideVariableForService(project, target.Variable, target.ServiceId))
+            {
+                MessageBox.Show(this, "This variable is visible in the selected service, but overriding it is not allowed.", "Set Value", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
             var existing = FindDirectValue(target.Variable.Id, target.Scope, target.ServiceId, target.EnvironmentId);
             var orphanedBlankServiceValue = FindOrphanedBlankServiceValue(target);
             var currentValue = NewerValue(orphanedBlankServiceValue, existing) ?? BuildDisplayEffective(target.ServiceId, target.EnvironmentId)
@@ -2093,14 +2637,14 @@ namespace EnvSecured.WinForms.Forms
                     ServiceId = target.ServiceId,
                     Value = value,
                     IsEncrypted = target.Variable.IsSecret,
-                    UpdatedAt = DateTime.UtcNow
+                    UpdatedAtUtc = DateTime.UtcNow
                 });
             }
             else
             {
                 existing.Value = value;
                 existing.IsEncrypted = target.Variable.IsSecret;
-                existing.UpdatedAt = DateTime.UtcNow;
+                existing.UpdatedAtUtc = DateTime.UtcNow;
             }
             if (orphanedBlankServiceValue != null)
             {
@@ -2155,12 +2699,17 @@ namespace EnvSecured.WinForms.Forms
 
         private static void CopyText(string text)
         {
-            Clipboard.SetText(text ?? string.Empty);
+            if (string.IsNullOrEmpty(text))
+            {
+                Clipboard.Clear();
+                return;
+            }
+            Clipboard.SetText(text);
         }
 
         private static string VariablePlaceholder(string key)
         {
-            return string.IsNullOrWhiteSpace(key) ? string.Empty : "${" + key + "}";
+            return string.IsNullOrWhiteSpace(key) ? string.Empty : "{{" + key + "}}";
         }
 
         private MatrixValueTarget MatrixTargetFromCell(DataGridView matrix, int rowIndex, int columnIndex)
@@ -2209,7 +2758,7 @@ namespace EnvSecured.WinForms.Forms
         {
             if (left == null) return right?.Value;
             if (right == null) return left.Value;
-            return left.UpdatedAt >= right.UpdatedAt ? left.Value : right.Value;
+            return left.UpdatedAtUtc >= right.UpdatedAtUtc ? left.Value : right.Value;
         }
 
         private void EnsureContractForMatrixTarget(MatrixValueTarget target)
@@ -2310,24 +2859,23 @@ namespace EnvSecured.WinForms.Forms
             contentPanel.Controls.Add(root);
         }
 
-        private void RenderContractsView()
+        private void RenderScopeView()
         {
             var root = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 2 };
             root.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
             root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
 
             var buttons = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false };
-            AddCommand(buttons, "Apply Changes", ApplyContractsMatrix);
-            AddCommand(buttons, "Auto Assign Prefixes", AutoAssignAllPrefixes);
+            AddCommand(buttons, "Apply Changes", ApplyScopeMatrix, "Apply", 132);
             buttons.Controls.Add(new Label
             {
-                Text = "Contracts Matrix: variables down, services across",
+                Text = "Scope Matrix: NONE, Read, Override, Export, Full",
                 AutoSize = true,
                 Padding = new Padding(12, 7, 0, 0),
                 Font = new Font(Font, FontStyle.Bold)
             });
 
-            contractsMatrix = new DataGridView
+            scopeMatrix = new DataGridView
             {
                 Dock = DockStyle.Fill,
                 AllowUserToAddRows = false,
@@ -2335,11 +2883,25 @@ namespace EnvSecured.WinForms.Forms
                 AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill,
                 SelectionMode = DataGridViewSelectionMode.CellSelect
             };
-            BuildContractsMatrix();
-            AttachColumnWidthPersistence(contractsMatrix, "Contracts");
-            RestoreColumnWidths(contractsMatrix, "Contracts");
+            scopeMatrix.DataError += (s, e) => { e.ThrowException = false; };
+            scopeMatrix.CellValueChanged += (s, e) =>
+            {
+                if (e.RowIndex < 0 || e.ColumnIndex < 0) return;
+                var cell = scopeMatrix.Rows[e.RowIndex].Cells[e.ColumnIndex];
+                ApplyScopeModeCellStyle(cell, Convert.ToString(cell.Value));
+            };
+            scopeMatrix.CurrentCellDirtyStateChanged += (s, e) =>
+            {
+                if (scopeMatrix.IsCurrentCellDirty)
+                {
+                    scopeMatrix.CommitEdit(DataGridViewDataErrorContexts.Commit);
+                }
+            };
+            BuildScopeMatrix();
+            AttachColumnWidthPersistence(scopeMatrix, "Scope");
+            RestoreColumnWidths(scopeMatrix, "Scope");
             root.Controls.Add(buttons, 0, 0);
-            root.Controls.Add(contractsMatrix, 0, 1);
+            root.Controls.Add(scopeMatrix, 0, 1);
             contentPanel.Controls.Add(root);
         }
 
@@ -2352,12 +2914,12 @@ namespace EnvSecured.WinForms.Forms
             root.RowStyles.Add(new RowStyle(SizeType.Percent, 62));
 
             var fileButtons = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false };
-            AddCommand(fileButtons, "Add Files", AddImportFiles);
-            AddCommand(fileButtons, "Select All", () => SetImportFilesSelected(true));
-            AddCommand(fileButtons, "Select None", () => SetImportFilesSelected(false));
-            removeImportFilesButton = AddCommand(fileButtons, "Remove Files", RemoveImportFile);
-            setImportEnvironmentButton = AddCommand(fileButtons, "Set Env For Selected", SetImportEnvironmentForSelected);
-            setImportServiceButton = AddCommand(fileButtons, "Set Service For Selected", SetImportServiceForSelected);
+            AddCommand(fileButtons, "Add Files", AddImportFiles, "FilesAdd", 110);
+            AddCommand(fileButtons, "Select All", () => SetImportFilesSelected(true), "SelectAll", 108);
+            AddCommand(fileButtons, "Select None", () => SetImportFilesSelected(false), "SelectNone", 116);
+            removeImportFilesButton = AddCommand(fileButtons, "Remove Files", RemoveImportFile, "FilesRemove", 124);
+            setImportEnvironmentButton = AddCommand(fileButtons, "Set Env For Selected", SetImportEnvironmentForSelected, "Environments", 154);
+            setImportServiceButton = AddCommand(fileButtons, "Set Service For Selected", SetImportServiceForSelected, "Services", 166);
             UpdateImportFileActionButtons();
             fileButtons.Controls.Add(new Label
             {
@@ -2372,15 +2934,15 @@ namespace EnvSecured.WinForms.Forms
                 : BuildImportFilesGrid();
 
             var previewButtons = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false };
-            AddCommand(previewButtons, "Select All", () => SetImportPreviewIncluded(true));
-            AddCommand(previewButtons, "Select None", () => SetImportPreviewIncluded(false));
-            AddCommand(previewButtons, "Set Env For Included", SetImportPreviewEnvironmentForIncluded);
-            AddCommand(previewButtons, "Set Service For Included", SetImportPreviewServiceForIncluded);
-            AddCommand(previewButtons, "Secret On", () => SetImportPreviewSecretForIncluded(true));
-            AddCommand(previewButtons, "Secret Off", () => SetImportPreviewSecretForIncluded(false));
-            AddCommand(previewButtons, "Required On", () => SetImportPreviewRequiredForIncluded(true));
-            AddCommand(previewButtons, "Required Off", () => SetImportPreviewRequiredForIncluded(false));
-            AddCommand(previewButtons, "Apply Import", ApplyImportPreview);
+            AddCommand(previewButtons, "Select All", () => SetImportPreviewIncluded(true), "SelectAll", 108);
+            AddCommand(previewButtons, "Select None", () => SetImportPreviewIncluded(false), "SelectNone", 116);
+            AddCommand(previewButtons, "Set Env For Included", SetImportPreviewEnvironmentForIncluded, "Environments", 154);
+            AddCommand(previewButtons, "Set Service For Included", SetImportPreviewServiceForIncluded, "Services", 166);
+            AddCommand(previewButtons, "Secret On", () => SetImportPreviewSecretForIncluded(true), "Key", 110);
+            AddCommand(previewButtons, "Secret Off", () => SetImportPreviewSecretForIncluded(false), "Unlock", 110);
+            AddCommand(previewButtons, "Required On", () => SetImportPreviewRequiredForIncluded(true), "Warning", 120);
+            AddCommand(previewButtons, "Required Off", () => SetImportPreviewRequiredForIncluded(false), "Info", 120);
+            AddCommand(previewButtons, "Apply Import", ApplyImportPreview, "Apply", 124);
             previewButtons.Controls.Add(new Label
             {
                 Text = "Preview: edit Include, Environment, Service, Key and NewValue before applying",
@@ -2733,10 +3295,10 @@ namespace EnvSecured.WinForms.Forms
 
         private void SetVariableServiceFilter()
         {
-            if (serviceCombo == null) return;
+            if (scopeFilterCombo == null) return;
             var value = ChooseServiceOption();
             if (value == null) return;
-            SelectComboByName(serviceCombo, NormalizeServiceOption(value));
+            SelectComboByName(scopeFilterCombo, NormalizeServiceOption(value));
             RefreshVariableGrid();
         }
 
@@ -2850,7 +3412,7 @@ namespace EnvSecured.WinForms.Forms
                     var variable = project.Variables.FirstOrDefault(v => string.Equals(v.Key, pair.Key, StringComparison.OrdinalIgnoreCase));
                     var contract = target.ServiceId == null || variable == null
                         ? null
-                        : project.Contracts.FirstOrDefault(c => c.VariableId == variable.Id && c.ServiceId == target.ServiceId && !c.Excluded);
+                        : project.Contracts.FirstOrDefault(c => c.VariableId == variable.Id && c.ServiceId == target.ServiceId);
                     var oldValue = FindRawValue(pair.Key, target.Scope, target.EnvironmentId, target.ServiceId);
                     importPreviewRows.Add(new ImportPreviewRow
                     {
@@ -2944,6 +3506,11 @@ namespace EnvSecured.WinForms.Forms
                 var variable = project.Variables.FirstOrDefault(v => string.Equals(v.Key, row.Key, StringComparison.OrdinalIgnoreCase));
                 if (variable == null)
                 {
+                    if (string.IsNullOrWhiteSpace(target.ServiceId))
+                    {
+                        MessageBox.Show(this, $"New variable {row.Key} requires a service owner. Set Service before applying import.", "Import", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                        return;
+                    }
                     variable = new VariableDefinitionModel
                     {
                         Id = UniqueVariableId(row.Key),
@@ -2951,13 +3518,17 @@ namespace EnvSecured.WinForms.Forms
                         DisplayName = row.Key.Trim(),
                         Type = row.Secret ? VariableType.Password : VariableType.String,
                         IsSecret = row.Secret,
+                        OwnerServiceId = target.ServiceId,
                         SortOrder = project.Variables.Count * 10
                     };
                     project.Variables.Add(variable);
-                    AutoAssignVariableToMatchingServices(variable);
                 }
                 else
                 {
+                    if (string.IsNullOrWhiteSpace(variable.OwnerServiceId))
+                    {
+                        variable.OwnerServiceId = target.ServiceId;
+                    }
                     variable.IsSecret = row.Secret;
                     variable.Type = row.Secret ? VariableType.Password : VariableType.String;
                 }
@@ -2979,35 +3550,22 @@ namespace EnvSecured.WinForms.Forms
                         ServiceId = target.ServiceId,
                         Value = row.NewValue,
                         IsEncrypted = row.Secret,
-                        UpdatedAt = DateTime.UtcNow
+                        UpdatedAtUtc = DateTime.UtcNow
                     });
                 }
                 else
                 {
                     existing.Value = row.NewValue;
                     existing.IsEncrypted = row.Secret;
-                    existing.UpdatedAt = DateTime.UtcNow;
+                    existing.UpdatedAtUtc = DateTime.UtcNow;
                 }
 
                 if (target.ServiceId != null)
                 {
-                    var contract = project.Contracts.FirstOrDefault(c => c.VariableId == variable.Id && c.ServiceId == target.ServiceId);
-                    if (contract == null)
-                    {
-                        project.Contracts.Add(new VariableContractModel
-                        {
-                            Id = ProjectService.NewId(),
-                            VariableId = variable.Id,
-                            ServiceId = target.ServiceId,
-                            Required = row.Required,
-                            SortOrder = project.Contracts.Count * 10
-                        });
-                    }
-                    else
-                    {
-                        contract.Excluded = false;
-                        contract.Required = row.Required;
-                    }
+                    var export = true;
+                    var allowOverride = true;
+                    var contract = ProjectService.EnsureServiceScopeContract(project, variable.Id, target.ServiceId, export, true, allowOverride);
+                    contract.Required = row.Required;
                 }
                 applied++;
             }
@@ -3021,87 +3579,174 @@ namespace EnvSecured.WinForms.Forms
             RenderCurrentView();
         }
 
-        private void BuildContractsMatrix()
+        private void BuildScopeMatrix()
         {
-            contractsMatrix.Columns.Clear();
-            contractsMatrix.Rows.Clear();
-            contractsMatrix.Columns.Add(new DataGridViewTextBoxColumn { Name = "VariableId", HeaderText = "VariableId", Visible = false });
-            contractsMatrix.Columns.Add(new DataGridViewTextBoxColumn { Name = "Group", HeaderText = "Group", ReadOnly = true, FillWeight = 80 });
-            contractsMatrix.Columns.Add(new DataGridViewTextBoxColumn { Name = "Variable", HeaderText = "Variable", ReadOnly = true, FillWeight = 160 });
+            scopeMatrix.Columns.Clear();
+            scopeMatrix.Rows.Clear();
+            scopeMatrix.Columns.Add(new DataGridViewTextBoxColumn { Name = "VariableId", HeaderText = "VariableId", Visible = false });
+            scopeMatrix.Columns.Add(new DataGridViewTextBoxColumn { Name = "Owner", HeaderText = "Owner", ReadOnly = true, FillWeight = 80 });
+            scopeMatrix.Columns.Add(new DataGridViewTextBoxColumn { Name = "Variable", HeaderText = "Variable", ReadOnly = true, FillWeight = 160 });
 
-            foreach (var service in project.Services.OrderBy(s => s.SortOrder))
+            var services = project.Services.OrderBy(s => s.SortOrder).ThenBy(s => s.Name).ToList();
+            foreach (var service in services)
             {
-                contractsMatrix.Columns.Add(new DataGridViewCheckBoxColumn
+                var column = new DataGridViewComboBoxColumn
                 {
                     Name = "svc_" + service.Id,
                     HeaderText = service.Name,
                     Tag = service.Id,
-                    FillWeight = 70
-                });
+                    FillWeight = 80,
+                    FlatStyle = FlatStyle.Flat
+                };
+                column.Items.AddRange(ScopeModes.Cast<object>().ToArray());
+                scopeMatrix.Columns.Add(column);
             }
 
-            foreach (var variable in project.Variables.OrderBy(v => v.GroupName).ThenBy(v => v.SortOrder).ThenBy(v => v.Key))
+            var serviceById = services.ToDictionary(s => s.Id, s => s.Name);
+            var variables = project.Variables
+                .OrderBy(v => OwnerSortOrder(v.OwnerServiceId))
+                .ThenBy(v => OwnerDisplayName(v.OwnerServiceId, serviceById))
+                .ThenBy(v => v.GroupName)
+                .ThenBy(v => v.SortOrder)
+                .ThenBy(v => v.Key);
+
+            foreach (var variable in variables)
             {
-                var rowIndex = contractsMatrix.Rows.Add();
-                var row = contractsMatrix.Rows[rowIndex];
+                var rowIndex = scopeMatrix.Rows.Add();
+                var row = scopeMatrix.Rows[rowIndex];
                 row.Cells["VariableId"].Value = variable.Id;
-                row.Cells["Group"].Value = string.IsNullOrWhiteSpace(variable.GroupName) ? "(none)" : variable.GroupName;
+                row.Cells["Owner"].Value = OwnerDisplayName(variable.OwnerServiceId, serviceById);
                 row.Cells["Variable"].Value = variable.Key;
-                foreach (var service in project.Services)
+                foreach (var service in services)
                 {
-                    row.Cells["svc_" + service.Id].Value = IsVariableUsedByService(variable.Id, service.Id);
+                    var isOwner = string.Equals(variable.OwnerServiceId, service.Id, StringComparison.Ordinal);
+                    var mode = isOwner ? "---" : ScopeModeFromState(variable, service.Id);
+                    var cell = row.Cells["svc_" + service.Id];
+                    if (isOwner)
+                    {
+                        cell = new DataGridViewTextBoxCell();
+                        row.Cells["svc_" + service.Id] = cell;
+                        cell.ReadOnly = true;
+                    }
+                    cell.Value = mode;
+                    ApplyScopeModeCellStyle(cell, mode);
                 }
             }
         }
 
-        private void ApplyContractsMatrix()
+        private void ApplyScopeMatrix()
         {
-            if (contractsMatrix == null) return;
-            var previousContracts = project.Contracts.ToList();
-            project.Contracts.Clear();
-            foreach (DataGridViewRow row in contractsMatrix.Rows)
+            if (scopeMatrix == null) return;
+            foreach (DataGridViewRow row in scopeMatrix.Rows)
             {
                 var variableId = Convert.ToString(row.Cells["VariableId"].Value);
-                foreach (DataGridViewColumn column in contractsMatrix.Columns)
+                var variable = project.Variables.FirstOrDefault(v => v.Id == variableId);
+                if (variable == null) continue;
+
+                foreach (DataGridViewColumn column in scopeMatrix.Columns)
                 {
-                    if (!(column is DataGridViewCheckBoxColumn)) continue;
+                    if (!(column is DataGridViewComboBoxColumn)) continue;
                     var serviceId = Convert.ToString(column.Tag);
-                    var enabled = Convert.ToBoolean(row.Cells[column.Name].Value ?? false);
-                    if (enabled)
+                    var mode = Convert.ToString(row.Cells[column.Name].Value);
+                    if (string.Equals(variable.OwnerServiceId, serviceId, StringComparison.Ordinal))
                     {
-                        var previous = previousContracts.FirstOrDefault(c => c.VariableId == variableId && c.ServiceId == serviceId && !c.Excluded);
-                        if (previous != null)
-                        {
-                            previous.Excluded = false;
-                            project.Contracts.Add(previous);
-                        }
-                        else if (!HasGlobalValue(variableId))
-                        {
-                            project.Contracts.Add(new VariableContractModel
-                            {
-                                Id = ProjectService.NewId(),
-                                VariableId = variableId,
-                                ServiceId = serviceId,
-                                Required = true,
-                                SortOrder = project.Contracts.Count * 10
-                            });
-                        }
+                        continue;
                     }
-                    else if (HasGlobalValue(variableId))
+
+                    ParseScopeMode(mode, out var visible, out var allowOverride, out var export);
+
+                    if (!visible && !export && !allowOverride)
                     {
-                        project.Contracts.Add(new VariableContractModel
-                        {
-                            Id = ProjectService.NewId(),
-                            VariableId = variableId,
-                            ServiceId = serviceId,
-                            Excluded = true,
-                            Required = false,
-                            SortOrder = project.Contracts.Count * 10
-                        });
+                        project.Contracts.RemoveAll(c => c.VariableId == variable.Id && c.ServiceId == serviceId);
+                    }
+                    else
+                    {
+                        ProjectService.EnsureServiceScopeContract(project, variable.Id, serviceId, export, visible, allowOverride);
                     }
                 }
             }
+
             Changed();
+            BuildScopeMatrix();
+        }
+
+        private string ScopeModeFromState(VariableDefinitionModel variable, string serviceId)
+        {
+            var visible = ProjectService.IsVariableVisibleToService(project, variable, serviceId);
+            if (!visible) return ScopeModeNone;
+
+            var allowOverride = ProjectService.CanOverrideVariableForService(project, variable, serviceId);
+            var export = IsVariableUsedByService(variable.Id, serviceId);
+            if (allowOverride && export) return ScopeModeFull;
+            if (allowOverride) return ScopeModeOverride;
+            if (export) return ScopeModeExport;
+            return ScopeModeRead;
+        }
+
+        private static void ParseScopeMode(string mode, out bool visible, out bool allowOverride, out bool export)
+        {
+            visible = false;
+            allowOverride = false;
+            export = false;
+
+            if (string.Equals(mode, ScopeModeRead, StringComparison.OrdinalIgnoreCase))
+            {
+                visible = true;
+            }
+            else if (string.Equals(mode, ScopeModeOverride, StringComparison.OrdinalIgnoreCase))
+            {
+                visible = true;
+                allowOverride = true;
+            }
+            else if (string.Equals(mode, ScopeModeExport, StringComparison.OrdinalIgnoreCase))
+            {
+                visible = true;
+                export = true;
+            }
+            else if (string.Equals(mode, ScopeModeFull, StringComparison.OrdinalIgnoreCase))
+            {
+                visible = true;
+                allowOverride = true;
+                export = true;
+            }
+        }
+
+        private static void ApplyScopeModeCellStyle(DataGridViewCell cell, string mode)
+        {
+            if (cell == null) return;
+            cell.Style.BackColor = ScopeModeBackColor(mode);
+            cell.Style.ForeColor = ScopeModeForeColor(mode);
+            cell.Style.SelectionBackColor = ControlPaint.Dark(ScopeModeBackColor(mode));
+            cell.Style.SelectionForeColor = ScopeModeForeColor(mode);
+        }
+
+        private static Color ScopeModeBackColor(string mode)
+        {
+            if (string.Equals(mode, "---", StringComparison.OrdinalIgnoreCase)) return SystemColors.ControlLight;
+            if (string.Equals(mode, ScopeModeRead, StringComparison.OrdinalIgnoreCase)) return Color.FromArgb(226, 239, 218);
+            if (string.Equals(mode, ScopeModeOverride, StringComparison.OrdinalIgnoreCase)) return Color.FromArgb(255, 242, 204);
+            if (string.Equals(mode, ScopeModeExport, StringComparison.OrdinalIgnoreCase)) return Color.FromArgb(221, 235, 247);
+            if (string.Equals(mode, ScopeModeFull, StringComparison.OrdinalIgnoreCase)) return Color.FromArgb(248, 203, 173);
+            return Color.FromArgb(224, 224, 224);
+        }
+
+        private static Color ScopeModeForeColor(string mode)
+        {
+            return string.Equals(mode, ScopeModeNone, StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(mode, "---", StringComparison.OrdinalIgnoreCase)
+                ? SystemColors.GrayText
+                : SystemColors.ControlText;
+        }
+
+        private int OwnerSortOrder(string ownerServiceId)
+        {
+            return project.Services.FirstOrDefault(s => string.Equals(s.Id, ownerServiceId, StringComparison.Ordinal))?.SortOrder ?? int.MaxValue;
+        }
+
+        private static string OwnerDisplayName(string ownerServiceId, IDictionary<string, string> serviceById)
+        {
+            if (string.IsNullOrWhiteSpace(ownerServiceId)) return "(none)";
+            return serviceById.TryGetValue(ownerServiceId, out var name) ? name : ownerServiceId;
         }
 
         private void AutoAssignAllPrefixes()
@@ -3121,7 +3766,7 @@ namespace EnvSecured.WinForms.Forms
             root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
 
             var buttons = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false };
-            var validate = AddCommand(buttons, "Validate All", () => RefreshValidationResults(null));
+            var validate = AddCommand(buttons, "Validate All", () => RefreshValidationResults(null), "Validate", 116);
             buttons.Controls.Add(new Label
             {
                 Text = "Checks duplicate names, broken references, required values and blank required values for every service/environment pair",
@@ -3178,9 +3823,9 @@ namespace EnvSecured.WinForms.Forms
             root.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
             root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
             var buttons = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false };
-            AddCommand(buttons, "Add", add);
-            if (edit != null) AddCommand(buttons, "Edit", edit);
-            if (delete != null) AddCommand(buttons, "Delete", delete);
+            AddCommand(buttons, "Add", add, "Add", 86);
+            if (edit != null) AddCommand(buttons, "Edit", edit, "Edit", 86);
+            if (delete != null) AddCommand(buttons, "Delete", delete, "Delete", 96);
             buttons.Controls.Add(new Label { Text = title, AutoSize = true, Padding = new Padding(12, 7, 0, 0), Font = new Font(Font, FontStyle.Bold) });
             mainGrid = BuildGrid();
             root.Controls.Add(buttons, 0, 0);
@@ -3206,9 +3851,10 @@ namespace EnvSecured.WinForms.Forms
         {
             grid.ColumnWidthChanged += (s, e) =>
             {
-                if (suppressColumnWidthPersistence) return;
+                if (suppressColumnWidthPersistence || gridsRestoringColumns.Contains(grid)) return;
                 SaveColumnWidths(grid, gridKey);
             };
+            grid.Disposed += (s, e) => gridsRestoringColumns.Remove(grid);
         }
 
         private void RestoreColumnWidths(DataGridView grid, string gridKey)
@@ -3221,6 +3867,7 @@ namespace EnvSecured.WinForms.Forms
             if (widths.Count == 0) return;
 
             suppressColumnWidthPersistence = true;
+            gridsRestoringColumns.Add(grid);
             try
             {
                 grid.AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.None;
@@ -3234,6 +3881,7 @@ namespace EnvSecured.WinForms.Forms
             }
             finally
             {
+                gridsRestoringColumns.Remove(grid);
                 suppressColumnWidthPersistence = false;
             }
         }
@@ -3260,12 +3908,16 @@ namespace EnvSecured.WinForms.Forms
             {
                 { "Validation", 35 },
                 { "Key", 300 },
+                { "Owner", 120 },
+                { "Export", 60 },
                 { "Secret", 56 },
                 { "AllowSharedSecret", 92 },
                 { "Required", 60 },
                 { "AllowNull", 75 },
-                { "Global", 220 },
-                { "Environment", 170 },
+                { "Group", 140 },
+                { "DemoValue", 180 },
+                { "DemoComment", 180 },
+                { "Description", 240 },
                 { "Service", 170 },
                 { "ServiceEnvironment", 185 },
                 { "Effective", 245 },
@@ -3280,15 +3932,19 @@ namespace EnvSecured.WinForms.Forms
             grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Id", HeaderText = "Id", Visible = false, ReadOnly = true });
             grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Validation", HeaderText = "!", ReadOnly = true, FillWeight = 35 });
             grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Key", HeaderText = "Key", ReadOnly = true, FillWeight = 150 });
+            grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Owner", HeaderText = "Owner", ReadOnly = true, FillWeight = 75 });
+            grid.Columns.Add(new DataGridViewCheckBoxColumn { Name = "Export", HeaderText = "Export", FillWeight = 60 });
             grid.Columns.Add(new DataGridViewCheckBoxColumn { Name = "Secret", HeaderText = "Secret", FillWeight = 55 });
             grid.Columns.Add(new DataGridViewCheckBoxColumn { Name = "AllowSharedSecret", HeaderText = "Shared Secret", FillWeight = 80 });
             grid.Columns.Add(new DataGridViewCheckBoxColumn { Name = "Required", HeaderText = "Required", FillWeight = 65 });
             grid.Columns.Add(new DataGridViewCheckBoxColumn { Name = "AllowNull", HeaderText = "Allow Null", FillWeight = 75 });
-            grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Global", HeaderText = "Global", ReadOnly = true });
-            grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Environment", HeaderText = "Environment", ReadOnly = true });
+            grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Group", HeaderText = "Group" });
+            grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "DemoValue", HeaderText = "Demo value" });
+            grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "DemoComment", HeaderText = "Demo comment" });
+            grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Description", HeaderText = "Description" });
             grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Service", HeaderText = "Service", ReadOnly = true });
             grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "ServiceEnvironment", HeaderText = "ServiceEnvironment", ReadOnly = true });
-            grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Effective", HeaderText = "Effective", ReadOnly = true });
+            grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Effective", HeaderText = "Calculated", ReadOnly = true });
             grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Source", HeaderText = "Source", ReadOnly = true, FillWeight = 70 });
             foreach (DataGridViewColumn column in grid.Columns)
             {
@@ -3304,9 +3960,15 @@ namespace EnvSecured.WinForms.Forms
                     grid.CommitEdit(DataGridViewDataErrorContexts.Commit);
                 }
             };
-            grid.ColumnHeaderMouseClick += (s, e) => ShowVariableColumnFilterMenu(grid, e.ColumnIndex);
+            grid.ColumnHeaderMouseClick += (s, e) =>
+            {
+                if (e.Button == MouseButtons.Right)
+                {
+                    ShowVariableColumnFilterMenu(grid, e.ColumnIndex);
+                }
+            };
             grid.CellMouseDown += VariableGridCellMouseDown;
-            grid.CellValueChanged += (s, e) => ApplyVariableGridCheckboxChange(grid, root, e.RowIndex, e.ColumnIndex);
+            grid.CellValueChanged += (s, e) => ApplyVariableGridChange(grid, root, e.RowIndex, e.ColumnIndex);
             grid.DataError += (s, e) => { e.ThrowException = false; };
             AttachColumnWidthPersistence(grid, "Variables");
             RestoreColumnWidths(grid, "Variables");
@@ -3323,7 +3985,7 @@ namespace EnvSecured.WinForms.Forms
             var key = Convert.ToString(row.Cells["Key"].Value);
             var menu = new ContextMenuStrip();
             menu.Items.Add("Copy Key", null, (s, args) => CopyText(key));
-            menu.Items.Add("Copy ${KEY}", null, (s, args) => CopyText(VariablePlaceholder(key)));
+            menu.Items.Add("Copy {{KEY}}", null, (s, args) => CopyText(VariablePlaceholder(key)));
             menu.Items.Add("Copy Value", null, (s, args) => CopyText(Convert.ToString(row.Cells[e.ColumnIndex].Value)));
             menu.Items.Add("Copy Effective Value", null, (s, args) => CopyText(Convert.ToString(row.Cells["Effective"].Value)));
             menu.Show(grid, grid.PointToClient(Cursor.Position));
@@ -3336,24 +3998,38 @@ namespace EnvSecured.WinForms.Forms
             var firstDisplayedScrollingRowIndex = mainGrid.FirstDisplayedScrollingRowIndex >= 0 ? mainGrid.FirstDisplayedScrollingRowIndex : 0;
             var env = SelectedEnvironment();
             var svc = SelectedService();
+            var ownerFilter = SelectedOwnerFilter();
+            var scopeFilter = SelectedScopeFilter();
+            var exportScopeServiceId = SelectedExportScopeServiceId();
             var search = searchBox?.Text?.Trim();
             var validationByVariable = validationService.Validate(project)
                 .Where(r => !string.IsNullOrWhiteSpace(r.VariableId))
                 .GroupBy(r => r.VariableId)
                 .ToDictionary(g => g.Key, g => g.ToList());
+            if (mainGrid.Columns.Contains("Export"))
+            {
+                mainGrid.Columns["Export"].Visible = exportScopeServiceId != null;
+                mainGrid.Columns["Export"].ToolTipText = "Export this variable for the selected Scope service.";
+            }
+            var hasScope = svc != null;
+            SetVariableGridScopeMode(hasScope);
             mainGrid.Rows.Clear();
             foreach (var v in project.Variables.OrderBy(v => v.SortOrder).Where(v => string.IsNullOrWhiteSpace(search) || v.Key.IndexOf(search, StringComparison.OrdinalIgnoreCase) >= 0))
             {
+                if (!PassesOwnerFilter(v, ownerFilter) || !PassesScopeFilter(v, scopeFilter))
+                {
+                    continue;
+                }
+
                 var effective = BuildDisplayEffective(svc?.Id, env?.Id).FirstOrDefault(x => x.Variable.Id == v.Id);
                 var selected = FindSelectedLayerValue(v.Id);
                 var required = svc != null && project.Contracts.Any(c => c.ServiceId == svc.Id && c.VariableId == v.Id && !c.Excluded && c.Required);
-                var globalValue = FindValue(v.Id, ValueScope.Global, null, null);
-                var environmentValue = FindValue(v.Id, ValueScope.Environment, null, env?.Id);
                 var serviceValue = FindValue(v.Id, ValueScope.Service, svc?.Id, null);
                 var serviceEnvironmentValue = FindValue(v.Id, ValueScope.ServiceEnvironment, svc?.Id, env?.Id);
                 var effectiveValue = DisplayValue(v, effective?.Value ?? selected.Value);
                 var source = effective?.SourceScope.ToString() ?? selected.Source;
-                if (!PassesVariableColumnFilters(v, required, globalValue, environmentValue, serviceValue, serviceEnvironmentValue, effectiveValue, source))
+                var export = exportScopeServiceId != null && IsVariableUsedByService(v.Id, exportScopeServiceId);
+                if (!PassesVariableColumnFilters(v, export, required, serviceValue, serviceEnvironmentValue, effectiveValue, source, hasScope))
                 {
                     continue;
                 }
@@ -3362,22 +4038,37 @@ namespace EnvSecured.WinForms.Forms
                     v.Id,
                     ValidationIndicator(v.Id, validationByVariable),
                     v.Key,
+                    OwnerDisplayName(v),
+                    export,
                     v.IsSecret,
                     v.AllowSharedSecret,
                     required,
                     v.AllowNull,
-                    globalValue,
-                    environmentValue,
+                    v.GroupName,
+                    v.DemoValue,
+                    v.DemoComment,
+                    v.Description,
                     serviceValue,
                     serviceEnvironmentValue,
                     effectiveValue,
                     source);
                 var row = mainGrid.Rows[rowIndex];
                 ApplyValidationCellStyle(row.Cells["Validation"], v.Id, validationByVariable);
+                var exportEditable = exportScopeServiceId != null && ProjectService.IsVariableVisibleToService(project, v, exportScopeServiceId);
+                row.Cells["Export"].ReadOnly = !exportEditable;
+                row.Cells["Export"].Style.BackColor = exportEditable ? Color.White : SystemColors.ControlLight;
+                row.Cells["Export"].ToolTipText = exportEditable
+                        ? "Export this variable for the selected scope service."
+                        : "The variable is not in scope for the selected service.";
                 if (svc == null)
                 {
                     row.Cells["Required"].ReadOnly = true;
                     row.Cells["Required"].Style.BackColor = SystemColors.ControlLight;
+                }
+                else
+                {
+                    row.Cells["Required"].ReadOnly = !ProjectService.IsVariableVisibleToService(project, v, svc.Id);
+                    row.Cells["Required"].Style.BackColor = row.Cells["Required"].ReadOnly ? SystemColors.ControlLight : Color.White;
                 }
             }
             if (mainGrid.Rows.Count == 0)
@@ -3397,6 +4088,74 @@ namespace EnvSecured.WinForms.Forms
             RefreshVariableGrid();
             RestoreVariableGridSelection(selectedId, -1);
             RefreshVariableDetails(root);
+        }
+
+        private void SetVariableGridScopeMode(bool hasScope)
+        {
+            SetColumnVisible("Group", !hasScope);
+            SetColumnVisible("DemoValue", !hasScope);
+            SetColumnVisible("DemoComment", !hasScope);
+            SetColumnVisible("Description", !hasScope);
+            SetColumnVisible("Service", hasScope);
+            SetColumnVisible("ServiceEnvironment", hasScope);
+            SetColumnVisible("Effective", hasScope);
+            SetColumnVisible("Source", hasScope);
+            SetColumnVisible("Required", hasScope);
+        }
+
+        private void SetColumnVisible(string columnName, bool visible)
+        {
+            if (mainGrid?.Columns.Contains(columnName) == true)
+            {
+                mainGrid.Columns[columnName].Visible = visible;
+            }
+        }
+
+        private string SelectedOwnerFilter()
+        {
+            return (ownerFilterCombo?.SelectedItem as ScopeSelectorItem)?.Id;
+        }
+
+        private string SelectedScopeFilter()
+        {
+            return (scopeFilterCombo?.SelectedItem as ScopeSelectorItem)?.Id;
+        }
+
+        private string SelectedExportScopeServiceId()
+        {
+            var scope = SelectedScopeFilter();
+            return string.IsNullOrWhiteSpace(scope) ? null : scope;
+        }
+
+        private string DefaultVariableOwnerServiceId()
+        {
+            var owner = SelectedOwnerFilter();
+            if (!string.IsNullOrWhiteSpace(owner)) return owner;
+            var scope = SelectedScopeFilter();
+            if (!string.IsNullOrWhiteSpace(scope)) return scope;
+            return project.Services.OrderBy(s => s.SortOrder).ThenBy(s => s.Name).FirstOrDefault()?.Id;
+        }
+
+        private bool PassesOwnerFilter(VariableDefinitionModel variable, string ownerFilter)
+        {
+            if (string.IsNullOrWhiteSpace(ownerFilter)) return true;
+            return string.Equals(variable.OwnerServiceId, ownerFilter, StringComparison.Ordinal);
+        }
+
+        private bool PassesScopeFilter(VariableDefinitionModel variable, string scopeFilter)
+        {
+            if (string.IsNullOrWhiteSpace(scopeFilter)) return true;
+            return ProjectService.IsVariableVisibleToService(project, variable, scopeFilter);
+        }
+
+        private string OwnerDisplayName(VariableDefinitionModel variable)
+        {
+            return project.Services.FirstOrDefault(s => s.Id == variable.OwnerServiceId)?.Name ?? variable.OwnerServiceId;
+        }
+
+        private static string DisplayInfoValue(string value)
+        {
+            return string.IsNullOrWhiteSpace(value) ? "-" : value;
         }
 
         private void RestoreVariableGridSelection(string variableId, int fallbackScrollRowIndex)
@@ -3441,24 +4200,28 @@ namespace EnvSecured.WinForms.Forms
 
         private bool PassesVariableColumnFilters(
             VariableDefinitionModel variable,
+            bool export,
             bool required,
-            string globalValue,
-            string environmentValue,
             string serviceValue,
             string serviceEnvironmentValue,
             string effectiveValue,
-            string source)
+            string source,
+            bool hasScope)
         {
             return PassesTextFilter("Key", variable.Key) &&
+                PassesBoolFilter("Export", export) &&
                 PassesBoolFilter("Secret", variable.IsSecret) &&
                 PassesBoolFilter("AllowSharedSecret", variable.AllowSharedSecret) &&
-                PassesBoolFilter("Required", required) &&
-                PassesTextFilter("Global", globalValue) &&
-                PassesTextFilter("Environment", environmentValue) &&
-                PassesTextFilter("Service", serviceValue) &&
-                PassesTextFilter("ServiceEnvironment", serviceEnvironmentValue) &&
-                PassesTextFilter("Effective", effectiveValue) &&
-                PassesTextFilter("Source", source);
+                PassesTextFilter("Group", variable.GroupName) &&
+                PassesTextFilter("DemoValue", variable.DemoValue) &&
+                PassesTextFilter("DemoComment", variable.DemoComment) &&
+                PassesTextFilter("Description", variable.Description) &&
+                (!hasScope ||
+                    (PassesBoolFilter("Required", required) &&
+                    PassesTextFilter("Service", serviceValue) &&
+                    PassesTextFilter("ServiceEnvironment", serviceEnvironmentValue) &&
+                    PassesTextFilter("Effective", effectiveValue) &&
+                    PassesTextFilter("Source", source)));
         }
 
         private bool PassesTextFilter(string columnName, string value)
@@ -3482,7 +4245,7 @@ namespace EnvSecured.WinForms.Forms
             if (column.Name == "Id") return;
 
             var menu = new ContextMenuStrip();
-            if (column.Name == "Secret" || column.Name == "AllowSharedSecret" || column.Name == "Required" || column.Name == "AllowNull")
+            if (column.Name == "Export" || column.Name == "Secret" || column.Name == "AllowSharedSecret" || column.Name == "Required" || column.Name == "AllowNull")
             {
                 AddBoolFilterMenuItem(menu, column.Name, "All");
                 AddBoolFilterMenuItem(menu, column.Name, "Yes");
@@ -3567,18 +4330,54 @@ namespace EnvSecured.WinForms.Forms
             return fallback ?? columnName;
         }
 
-        private void ApplyVariableGridCheckboxChange(DataGridView grid, TableLayoutPanel root, int rowIndex, int columnIndex)
+        private void ApplyVariableGridChange(DataGridView grid, TableLayoutPanel root, int rowIndex, int columnIndex)
         {
             if (rowIndex < 0 || columnIndex < 0 || rowIndex >= grid.Rows.Count) return;
             var columnName = grid.Columns[columnIndex].Name;
-            if (columnName != "Secret" && columnName != "AllowSharedSecret" && columnName != "Required" && columnName != "AllowNull") return;
+            if (columnName != "Export" &&
+                columnName != "Secret" &&
+                columnName != "AllowSharedSecret" &&
+                columnName != "Required" &&
+                columnName != "AllowNull" &&
+                columnName != "Group" &&
+                columnName != "DemoValue" &&
+                columnName != "DemoComment" &&
+                columnName != "Description") return;
 
             var variableId = Convert.ToString(grid.Rows[rowIndex].Cells["Id"].Value);
             var variable = project.Variables.FirstOrDefault(v => v.Id == variableId);
             if (variable == null) return;
 
+            if (columnName == "Group" || columnName == "DemoValue" || columnName == "DemoComment" || columnName == "Description")
+            {
+                var value = Convert.ToString(grid.Rows[rowIndex].Cells[columnName].Value);
+                if (columnName == "Group") variable.GroupName = value;
+                else if (columnName == "DemoValue") variable.DemoValue = value;
+                else if (columnName == "DemoComment") variable.DemoComment = value;
+                else variable.Description = value;
+
+                modified = true;
+                SaveRecoveryBackupIfPossible();
+                RefreshVariableDetails(root);
+                RefreshStatus();
+                return;
+            }
+
             var enabled = Convert.ToBoolean(grid.Rows[rowIndex].Cells[columnName].Value ?? false);
-            if (columnName == "Secret")
+            if (columnName == "Export")
+            {
+                var serviceId = SelectedExportScopeServiceId();
+                if (serviceId == null || !ProjectService.IsVariableVisibleToService(project, variable, serviceId))
+                {
+                    grid.Rows[rowIndex].Cells[columnName].Value = false;
+                    return;
+                }
+
+                var visible = ProjectService.IsVariableVisibleToService(project, variable, serviceId);
+                var allowOverride = ProjectService.CanOverrideVariableForService(project, variable, serviceId);
+                SetVariableServiceContractFlags(variable.Id, serviceId, enabled, visible, allowOverride);
+            }
+            else if (columnName == "Secret")
             {
                 variable.IsSecret = enabled;
                 variable.Type = enabled ? VariableType.Password : VariableType.String;
@@ -3780,10 +4579,19 @@ namespace EnvSecured.WinForms.Forms
                         MessageBox.Show(this, "Service name already exists.", dialog.Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
                         continue;
                     }
+                    var outputFolder = outputFolderBox.Text.Trim();
+                    var duplicateOutputFolder = project.Services.FirstOrDefault(s =>
+                        s != service &&
+                        string.Equals(NormalizeOutputFolderKey(s.OutputFolder), NormalizeOutputFolderKey(outputFolder), StringComparison.OrdinalIgnoreCase));
+                    if (duplicateOutputFolder != null)
+                    {
+                        MessageBox.Show(this, "Service output folder must be unique. Empty output folder can be used by only one service.", dialog.Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                        continue;
+                    }
 
                     service.Name = name;
                     service.DisplayName = DefaultIfBlank(displayBox.Text, name);
-                    service.OutputFolder = DefaultIfBlank(outputFolderBox.Text, Slug(name));
+                    service.OutputFolder = outputFolder;
                     service.DefaultPrefix = prefixBox.Text;
                     service.IsActive = activeBox.Checked;
                     service.AllowSharedVariablesWithoutContract = sharedWithoutContractBox.Checked;
@@ -3878,7 +4686,12 @@ namespace EnvSecured.WinForms.Forms
 
         private static TextBox AddCardTextBox(TableLayoutPanel form, string label, int row, string value, bool readOnly)
         {
-            form.Controls.Add(new Label { Text = label, Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft }, 0, row);
+            return AddCardTextBox(form, label, row, value, readOnly, 0, 1);
+        }
+
+        private static TextBox AddCardTextBox(TableLayoutPanel form, string label, int row, string value, bool readOnly, int labelColumn, int inputColumn)
+        {
+            form.Controls.Add(new Label { Text = label, Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft }, labelColumn, row);
             var box = new TextBox
             {
                 Anchor = AnchorStyles.Left | AnchorStyles.Right,
@@ -3886,7 +4699,7 @@ namespace EnvSecured.WinForms.Forms
                 Text = value ?? string.Empty,
                 ReadOnly = readOnly
             };
-            form.Controls.Add(box, 1, row);
+            form.Controls.Add(box, inputColumn, row);
             return box;
         }
 
@@ -3918,20 +4731,24 @@ namespace EnvSecured.WinForms.Forms
 
         private void AddVariable()
         {
-            var key = PromptDialog.Show(this, "Add Variable", "Key:", "DATABASE_HOST");
-            if (string.IsNullOrWhiteSpace(key)) return;
-            var isSecret = MessageBox.Show(this, "Secret variable?", "Add Variable", MessageBoxButtons.YesNo) == DialogResult.Yes;
+            var ownerServiceId = DefaultVariableOwnerServiceId();
+            if (string.IsNullOrWhiteSpace(ownerServiceId))
+            {
+                MessageBox.Show(this, "Create at least one service before adding variables.", "Add Variable", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
             var variable = new VariableDefinitionModel
             {
-                Id = Slug(key),
-                Key = key.Trim().ToUpperInvariant(),
-                DisplayName = key.Trim(),
-                Type = isSecret ? VariableType.Password : VariableType.String,
-                IsSecret = isSecret,
+                Id = UniqueVariableId("DATABASE_HOST"),
+                Key = "DATABASE_HOST",
+                DisplayName = "DATABASE_HOST",
+                Type = VariableType.String,
+                OwnerServiceId = ownerServiceId,
+                IsActive = true,
                 SortOrder = project.Variables.Count * 10
             };
+            if (!ShowVariableCard(variable, true)) return;
             project.Variables.Add(variable);
-            AutoAssignVariableToMatchingServices(variable);
             Changed();
         }
 
@@ -3939,12 +4756,306 @@ namespace EnvSecured.WinForms.Forms
         {
             var variable = GetSelectedVariable();
             if (variable == null) return;
-            var key = PromptDialog.Show(this, "Edit Variable", "Key:", variable.Key);
-            if (string.IsNullOrWhiteSpace(key)) return;
-            variable.Key = key.Trim().ToUpperInvariant();
-            variable.DisplayName = key.Trim();
-            AutoAssignVariableToMatchingServices(variable);
-            Changed();
+            if (ShowVariableCard(variable, false)) Changed();
+        }
+
+        private bool ShowVariableCard(VariableDefinitionModel variable, bool isNew)
+        {
+            if (project.Services.Count == 0)
+            {
+                MessageBox.Show(this, "Create at least one service before editing variables.", isNew ? "Add Variable" : "Variable Card", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return false;
+            }
+            using (var dialog = new Form
+            {
+                Text = isNew ? "Add Variable" : "Variable Card",
+                Width = 860,
+                Height = 720,
+                StartPosition = FormStartPosition.CenterParent,
+                FormBorderStyle = FormBorderStyle.FixedDialog,
+                MinimizeBox = false,
+                MaximizeBox = false
+            })
+            {
+                var root = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 4, Padding = new Padding(10) };
+                root.RowStyles.Add(new RowStyle(SizeType.Absolute, 300));
+                root.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
+                root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+                root.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
+
+                var form = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 4, RowCount = 9 };
+                form.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 120));
+                form.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+                form.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 120));
+                form.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+                for (var i = 0; i < 9; i++) form.RowStyles.Add(new RowStyle(SizeType.Absolute, 32));
+
+                var keyBox = AddCardTextBox(form, "Key:", 0, variable.Key, false);
+                form.SetColumnSpan(keyBox, 3);
+                var displayBox = AddCardTextBox(form, "Display name:", 1, variable.DisplayName, false);
+                form.SetColumnSpan(displayBox, 3);
+
+                form.Controls.Add(new Label { Text = "Owner:", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft }, 0, 2);
+                var ownerCombo = new ComboBox { Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDownList, DisplayMember = "Name" };
+                var ownerItems = project.Services.OrderBy(s => s.SortOrder).ThenBy(s => s.Name).Select(s => new ScopeSelectorItem(s.Id, s.Name)).ToList();
+                ownerCombo.DataSource = ownerItems;
+                ownerCombo.SelectedItem = ownerItems.FirstOrDefault(i => string.Equals(i.Id, variable.OwnerServiceId, StringComparison.Ordinal))
+                    ?? ownerItems.FirstOrDefault();
+                form.Controls.Add(ownerCombo, 1, 2);
+
+                form.Controls.Add(new Label { Text = "Type:", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft }, 2, 2);
+                var typeCombo = new ComboBox { Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDownList };
+                typeCombo.Items.AddRange(Enum.GetNames(typeof(VariableType)).Cast<object>().ToArray());
+                typeCombo.SelectedItem = variable.Type.ToString();
+                form.Controls.Add(typeCombo, 3, 2);
+
+                var activeBox = AddCardCheckBox(form, "Active:", 3, variable.IsActive);
+                var secretBox = AddCardCheckBox(form, "Secret:", 4, variable.IsSecret);
+                var sharedSecretBox = AddCardCheckBox(form, "Shared secret:", 5, variable.AllowSharedSecret);
+                var allowNullBox = AddCardCheckBox(form, "Allow null:", 6, variable.AllowNull);
+                var allowBlankBox = AddCardCheckBox(form, "Allow blank:", 7, variable.AllowBlank);
+                var groupBox = AddCardTextBox(form, "Group:", 3, variable.GroupName, false, 2, 3);
+                var exampleBox = AddCardTextBox(form, "Demo value:", 4, variable.DemoValue, false, 2, 3);
+                var placeholderBox = AddCardTextBox(form, "Demo comment:", 5, variable.DemoComment, false, 2, 3);
+                var descriptionBox = AddCardTextBox(form, "Description:", 6, variable.Description, false, 2, 3);
+
+                var summary = new Label
+                {
+                    Text = $"Values: {project.Values.Count(v => v.VariableId == variable.Id)}    References: {CountInterpolationReferences(variable.Key)}",
+                    Dock = DockStyle.Fill,
+                    TextAlign = ContentAlignment.MiddleLeft
+                };
+                form.Controls.Add(new Label { Text = "Summary:", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft }, 2, 7);
+                form.Controls.Add(summary, 3, 7);
+
+                secretBox.CheckedChanged += (s, e) =>
+                {
+                    if (secretBox.Checked) typeCombo.SelectedItem = VariableType.Password.ToString();
+                    else if (string.Equals(Convert.ToString(typeCombo.SelectedItem), VariableType.Password.ToString(), StringComparison.Ordinal))
+                    {
+                        typeCombo.SelectedItem = VariableType.String.ToString();
+                    }
+                };
+                sharedSecretBox.CheckedChanged += (s, e) =>
+                {
+                    if (sharedSecretBox.Checked)
+                    {
+                        secretBox.Checked = true;
+                        typeCombo.SelectedItem = VariableType.Password.ToString();
+                    }
+                };
+
+                var scopeHeader = new Label
+                {
+                    Text = "Service Scope: NONE / Read / Override / Export / Full",
+                    Dock = DockStyle.Fill,
+                    TextAlign = ContentAlignment.MiddleLeft,
+                    Font = new Font(Font, FontStyle.Bold)
+                };
+                var scopeGrid = BuildVariableCardScopeGrid(variable, SelectedScopeOwnerId(ownerCombo));
+                ownerCombo.SelectedIndexChanged += (s, e) => PopulateVariableCardScopeGrid(scopeGrid, variable, SelectedScopeOwnerId(ownerCombo));
+
+                var bottom = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.RightToLeft };
+                var ok = new Button { Text = "OK", Width = 90, Height = 28, DialogResult = DialogResult.OK };
+                var cancel = new Button { Text = "Cancel", Width = 90, Height = 28, DialogResult = DialogResult.Cancel };
+                bottom.Controls.Add(cancel);
+                bottom.Controls.Add(ok);
+
+                root.Controls.Add(form, 0, 0);
+                root.Controls.Add(scopeHeader, 0, 1);
+                root.Controls.Add(scopeGrid, 0, 2);
+                root.Controls.Add(bottom, 0, 3);
+                dialog.Controls.Add(root);
+                dialog.AcceptButton = ok;
+                dialog.CancelButton = cancel;
+
+                while (dialog.ShowDialog(this) == DialogResult.OK)
+                {
+                    var key = keyBox.Text.Trim().ToUpperInvariant();
+                    if (string.IsNullOrWhiteSpace(key))
+                    {
+                        MessageBox.Show(this, "Key is required.", dialog.Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                        continue;
+                    }
+                    if (project.Variables.Any(v => v != variable && string.Equals(v.Key, key, StringComparison.OrdinalIgnoreCase)))
+                    {
+                        MessageBox.Show(this, "Variable key already exists.", dialog.Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                        continue;
+                    }
+
+                    var oldKey = variable.Key;
+                    var newOwnerServiceId = SelectedScopeOwnerId(ownerCombo);
+                    var oldOwnerServiceId = variable.OwnerServiceId;
+                    if (!isNew && !string.Equals(oldKey, key, StringComparison.OrdinalIgnoreCase))
+                    {
+                        var referenceCount = CountInterpolationReferences(oldKey);
+                        if (referenceCount > 0)
+                        {
+                            var answer = MessageBox.Show(
+                                this,
+                                $"Replace {referenceCount} interpolation reference(s) from {{{{{oldKey}}}}} to {{{{{key}}}}}?",
+                                dialog.Text,
+                                MessageBoxButtons.YesNo,
+                                MessageBoxIcon.Question);
+                            if (answer == DialogResult.Yes)
+                            {
+                                ProjectService.ReplaceInterpolationReferences(project, oldKey, key);
+                            }
+                        }
+                    }
+
+                    if (!SameNullable(oldOwnerServiceId, newOwnerServiceId))
+                    {
+                        var movable = CountMovableOwnerValues(variable.Id, oldOwnerServiceId, newOwnerServiceId);
+                        if (movable > 0)
+                        {
+                            var answer = MessageBox.Show(
+                                this,
+                                $"Move {movable} owner value(s) to the new owner?",
+                                dialog.Text,
+                                MessageBoxButtons.YesNo,
+                                MessageBoxIcon.Question);
+                            if (answer == DialogResult.Yes)
+                            {
+                                ProjectService.MoveOwnerValues(project, variable.Id, oldOwnerServiceId, newOwnerServiceId);
+                            }
+                        }
+                    }
+
+                    variable.Key = key;
+                    variable.DisplayName = DefaultIfBlank(displayBox.Text, key);
+                    variable.OwnerServiceId = newOwnerServiceId;
+                    variable.Type = (VariableType)Enum.Parse(typeof(VariableType), Convert.ToString(typeCombo.SelectedItem));
+                    variable.IsSecret = secretBox.Checked || variable.Type == VariableType.Password;
+                    variable.AllowSharedSecret = sharedSecretBox.Checked && variable.IsSecret;
+                    variable.AllowNull = allowNullBox.Checked;
+                    variable.AllowBlank = allowBlankBox.Checked;
+                    variable.IsActive = activeBox.Checked;
+                    variable.GroupName = groupBox.Text;
+                    variable.DemoValue = exampleBox.Text;
+                    variable.DemoComment = placeholderBox.Text;
+                    variable.Description = descriptionBox.Text;
+                    ApplyVariableCardScopeGrid(scopeGrid, variable);
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private DataGridView BuildVariableCardScopeGrid(VariableDefinitionModel variable, string ownerServiceId)
+        {
+            var grid = new DataGridView
+            {
+                Dock = DockStyle.Fill,
+                AllowUserToAddRows = false,
+                AllowUserToDeleteRows = false,
+                AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill,
+                SelectionMode = DataGridViewSelectionMode.CellSelect,
+                RowHeadersVisible = false
+            };
+            grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "ServiceId", HeaderText = "ServiceId", Visible = false });
+            grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Service", HeaderText = "Service", ReadOnly = true, FillWeight = 140 });
+            var modeColumn = new DataGridViewComboBoxColumn
+            {
+                Name = "Mode",
+                HeaderText = "Mode",
+                FillWeight = 120,
+                FlatStyle = FlatStyle.Flat
+            };
+            modeColumn.Items.AddRange(ScopeModes.Cast<object>().ToArray());
+            grid.Columns.Add(modeColumn);
+            grid.DataError += (s, e) => { e.ThrowException = false; };
+            grid.CellValueChanged += (s, e) =>
+            {
+                if (e.RowIndex < 0 || e.ColumnIndex < 0 || grid.Columns[e.ColumnIndex].Name != "Mode") return;
+                var cell = grid.Rows[e.RowIndex].Cells[e.ColumnIndex];
+                ApplyScopeModeCellStyle(cell, Convert.ToString(cell.Value));
+            };
+            grid.CurrentCellDirtyStateChanged += (s, e) =>
+            {
+                if (grid.IsCurrentCellDirty)
+                {
+                    grid.CommitEdit(DataGridViewDataErrorContexts.Commit);
+                }
+            };
+            PopulateVariableCardScopeGrid(grid, variable, ownerServiceId);
+            return grid;
+        }
+
+        private void PopulateVariableCardScopeGrid(DataGridView grid, VariableDefinitionModel variable, string ownerServiceId)
+        {
+            grid.Rows.Clear();
+            foreach (var service in project.Services.OrderBy(s => s.SortOrder).ThenBy(s => s.Name))
+            {
+                var rowIndex = grid.Rows.Add();
+                var row = grid.Rows[rowIndex];
+                row.Cells["ServiceId"].Value = service.Id;
+                row.Cells["Service"].Value = service.Name;
+                row.Cells["Service"].Style.BackColor = SystemColors.ControlLight;
+                var isOwner = string.Equals(ownerServiceId, service.Id, StringComparison.Ordinal);
+                var mode = isOwner ? "---" : ScopeModeFromContract(variable.Id, service.Id);
+                if (isOwner)
+                {
+                    row.Cells["Mode"] = new DataGridViewTextBoxCell { ReadOnly = true };
+                }
+                else if (!(row.Cells["Mode"] is DataGridViewComboBoxCell))
+                {
+                    var comboCell = new DataGridViewComboBoxCell { FlatStyle = FlatStyle.Flat };
+                    comboCell.Items.AddRange(ScopeModes.Cast<object>().ToArray());
+                    row.Cells["Mode"] = comboCell;
+                }
+                row.Cells["Mode"].Value = mode;
+                ApplyScopeModeCellStyle(row.Cells["Mode"], mode);
+            }
+        }
+
+        private void ApplyVariableCardScopeGrid(DataGridView grid, VariableDefinitionModel variable)
+        {
+            foreach (DataGridViewRow row in grid.Rows)
+            {
+                var serviceId = Convert.ToString(row.Cells["ServiceId"].Value);
+                if (string.IsNullOrWhiteSpace(serviceId) || string.Equals(variable.OwnerServiceId, serviceId, StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                ParseScopeMode(Convert.ToString(row.Cells["Mode"].Value), out var visible, out var allowOverride, out var export);
+                if (!visible && !allowOverride && !export)
+                {
+                    project.Contracts.RemoveAll(c => c.VariableId == variable.Id && c.ServiceId == serviceId);
+                }
+                else
+                {
+                    ProjectService.EnsureServiceScopeContract(project, variable.Id, serviceId, export, visible, allowOverride);
+                }
+            }
+        }
+
+        private string ScopeModeFromContract(string variableId, string serviceId)
+        {
+            var contract = project.Contracts.FirstOrDefault(c => c.VariableId == variableId && c.ServiceId == serviceId);
+            if (contract == null) return ScopeModeNone;
+            var visible = contract.VisibleToService;
+            var export = !contract.Excluded;
+            var allowOverride = visible && contract.AllowOverride;
+            if (!visible && !export) return ScopeModeNone;
+            if (allowOverride && export) return ScopeModeFull;
+            if (allowOverride) return ScopeModeOverride;
+            if (export) return ScopeModeExport;
+            return ScopeModeRead;
+        }
+
+        private static string SelectedScopeOwnerId(ComboBox ownerCombo)
+        {
+            return (ownerCombo?.SelectedItem as ScopeSelectorItem)?.Id;
+        }
+
+        private int CountInterpolationReferences(string key)
+        {
+            if (string.IsNullOrWhiteSpace(key)) return 0;
+            var token = "{{" + key.Trim().ToUpperInvariant() + "}}";
+            return project.Values.Count(v => !string.IsNullOrEmpty(v.Value) && v.Value.Contains(token));
         }
 
         private void DeleteVariable()
@@ -3962,6 +5073,11 @@ namespace EnvSecured.WinForms.Forms
             var variable = GetSelectedVariable();
             if (variable == null) return;
             var target = CurrentValueTarget();
+            if (!ProjectService.CanOverrideVariableForService(project, variable, target.ServiceId))
+            {
+                MessageBox.Show(this, "This variable cannot be set in the selected service scope.", "Set Value", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
             var existing = project.Values.LastOrDefault(v =>
                 v.VariableId == variable.Id &&
                 v.Scope == target.Scope &&
@@ -3980,13 +5096,13 @@ namespace EnvSecured.WinForms.Forms
                     ServiceId = target.ServiceId,
                     Value = value,
                     IsEncrypted = variable.IsSecret,
-                    UpdatedAt = DateTime.UtcNow
+                    UpdatedAtUtc = DateTime.UtcNow
                 });
             }
             else
             {
                 existing.Value = value;
-                existing.UpdatedAt = DateTime.UtcNow;
+                existing.UpdatedAtUtc = DateTime.UtcNow;
             }
             Changed();
         }
@@ -4197,7 +5313,7 @@ namespace EnvSecured.WinForms.Forms
                 var key = line.Substring(0, equalsIndex).Trim();
                 var value = line.Substring(equalsIndex + 1).Trim();
                 if (key.Length == 0) continue;
-                if ((value.StartsWith("\"") && value.EndsWith("\"")) || (value.StartsWith("'") && value.EndsWith("'")))
+                if (value.Length >= 2 && ((value.StartsWith("\"") && value.EndsWith("\"")) || (value.StartsWith("'") && value.EndsWith("'"))))
                 {
                     value = value.Substring(1, value.Length - 2);
                 }
@@ -4336,7 +5452,7 @@ namespace EnvSecured.WinForms.Forms
 
         private ServiceModel SelectedService()
         {
-            var selected = serviceCombo?.SelectedItem as ScopeSelectorItem;
+            var selected = scopeFilterCombo?.SelectedItem as ScopeSelectorItem;
             return selected?.Id == null ? null : project.Services.FirstOrDefault(s => s.Id == selected.Id);
         }
 
@@ -4488,7 +5604,7 @@ namespace EnvSecured.WinForms.Forms
             };
             var envelopeJson = serializer.Serialize(envelope);
             var actualPath = recoveryBackup ? vaultFileService.GetRecoveryBackupPath(path) : path;
-            SaveTextAtomic(envelopeJson, actualPath, !recoveryBackup);
+            SaveTextAtomic(envelopeJson, actualPath, false);
             return true;
         }
 
@@ -4505,6 +5621,11 @@ namespace EnvSecured.WinForms.Forms
                 File.Delete(path);
             }
             File.Move(tempPath, path);
+            var backupPath = path + ".bak";
+            if (!keepBackup && File.Exists(backupPath))
+            {
+                File.Delete(backupPath);
+            }
         }
 
         private ProjectModel PrepareProjectForStorage()
@@ -4783,6 +5904,7 @@ namespace EnvSecured.WinForms.Forms
         private static void NormalizeLoadedProjectSettings(ProjectModel targetProject)
         {
             if (targetProject == null) return;
+            ProjectService.EnsureProjectCollections(targetProject);
             targetProject.Settings = targetProject.Settings ?? new ProjectSettings();
             if (string.IsNullOrWhiteSpace(targetProject.Settings.EncryptionMode))
             {
@@ -4804,6 +5926,8 @@ namespace EnvSecured.WinForms.Forms
                 Text = "EnvSecured Studio";
                 if (saveButton != null) saveButton.Enabled = false;
                 if (validateButton != null) validateButton.Enabled = false;
+                UpdateQuickStats();
+                UpdateVaultStatus();
                 if (status == null) return;
                 status.Items.Clear();
                 status.Items.Add("No project open");
@@ -4816,6 +5940,8 @@ namespace EnvSecured.WinForms.Forms
                 : $"EnvSecured Studio - {project.ProjectName}";
             if (saveButton != null) saveButton.Enabled = true;
             if (validateButton != null) validateButton.Enabled = true;
+            UpdateQuickStats();
+            UpdateVaultStatus();
             if (status == null) return;
             status.Items.Clear();
             if (modified)
@@ -4837,6 +5963,98 @@ namespace EnvSecured.WinForms.Forms
             status.Items.Add($"Variables: {project.Variables.Count}");
             status.Items.Add($"Secrets: {project.Variables.Count(v => v.IsSecret)}");
             status.Items.Add($"v{project.Version}");
+        }
+
+        private void UpdateVaultStatus()
+        {
+            if (vaultStatusLabel == null || vaultStatusIcon == null) return;
+            if (project == null)
+            {
+                vaultStatusLabel.Text = "Vault: No project";
+                vaultStatusIcon.Image = TryGetUiImage("Info");
+                return;
+            }
+
+            var mode = GetProjectEncryptionMode(project);
+            vaultStatusLabel.Text = "Vault: " + VaultProtectionLabel(mode);
+            vaultStatusIcon.Image = VaultModeIcon(mode) ?? TryGetUiImage("Info");
+        }
+
+        private static string VaultProtectionLabel(string mode)
+        {
+            if (string.Equals(mode, "SecretsOnly", StringComparison.OrdinalIgnoreCase)) return "Secrets only";
+            if (string.Equals(mode, "AllValues", StringComparison.OrdinalIgnoreCase)) return "All values";
+            if (string.Equals(mode, "WholeJson", StringComparison.OrdinalIgnoreCase)) return "Whole vault";
+            return "Open";
+        }
+
+        private Image VaultModeIcon(string mode)
+        {
+            if (string.Equals(mode, "Open", StringComparison.OrdinalIgnoreCase)) return TryGetUiImage("VaultOpen");
+            if (string.Equals(mode, "SecretsOnly", StringComparison.OrdinalIgnoreCase)) return TryGetUiImage("VaultSecrets");
+            if (string.Equals(mode, "AllValues", StringComparison.OrdinalIgnoreCase)) return TryGetUiImage("VaultEncrypted");
+            if (string.Equals(mode, "WholeJson", StringComparison.OrdinalIgnoreCase)) return TryGetUiImage("VaultMasked");
+            return TryGetUiImage("Unlock");
+        }
+
+        private Image TryGetUiImage(string key)
+        {
+            return !string.IsNullOrWhiteSpace(key) && uiImages.TryGetValue(key, out var image) ? image : null;
+        }
+
+        private void UpdateQuickStats()
+        {
+            if (quickStatsTable == null) return;
+            quickStatsTable.SuspendLayout();
+            quickStatsTable.Controls.Clear();
+            if (project == null)
+            {
+                AddQuickStatRow(0, "Services:", "-");
+                AddQuickStatRow(1, "Environments:", "-");
+                AddQuickStatRow(2, "Variables:", "-");
+                AddQuickStatRow(3, "Secrets:", "-");
+                AddQuickStatRow(4, "File:", "none");
+                quickStatsTable.ResumeLayout();
+                return;
+            }
+
+            AddQuickStatRow(0, "Services:", project.Services.Count.ToString());
+            AddQuickStatRow(1, "Environments:", project.Environments.Count.ToString());
+            AddQuickStatRow(2, "Variables:", project.Variables.Count.ToString());
+            AddQuickStatRow(3, "Secrets:", project.Variables.Count(v => v.IsSecret).ToString());
+            AddQuickStatRow(4, "File:", modified ? "modified" : "saved");
+            quickStatsTable.ResumeLayout();
+        }
+
+        private void AddQuickStatRow(int row, string label, string value)
+        {
+            var icon = new Label
+            {
+                Text = "●",
+                Dock = DockStyle.Fill,
+                TextAlign = ContentAlignment.MiddleCenter,
+                ForeColor = Color.FromArgb(25, 172, 52),
+                Font = new Font(Font.FontFamily, 7f, FontStyle.Bold),
+                Margin = Padding.Empty
+            };
+            var name = new Label
+            {
+                Text = label,
+                Dock = DockStyle.Fill,
+                TextAlign = ContentAlignment.MiddleLeft,
+                Margin = Padding.Empty
+            };
+            var val = new Label
+            {
+                Text = value,
+                Dock = DockStyle.Fill,
+                TextAlign = ContentAlignment.MiddleLeft,
+                AutoEllipsis = true,
+                Margin = Padding.Empty
+            };
+            quickStatsTable.Controls.Add(icon, 0, row);
+            quickStatsTable.Controls.Add(name, 1, row);
+            quickStatsTable.Controls.Add(val, 2, row);
         }
 
         private static bool ConfirmDelete(string name)

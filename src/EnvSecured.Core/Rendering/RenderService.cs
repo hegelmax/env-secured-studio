@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -17,6 +18,7 @@ namespace EnvSecured.Core.Rendering
 
         public void RenderRuntimeEnv(ProjectModel project, string outputRoot, string serviceId, string environmentId)
         {
+            ValidateUniqueOutputFolders(project);
             var service = project.Services.Single(s => s.Id == serviceId);
             var environment = project.Environments.Single(e => e.Id == environmentId);
             var effective = new EffectiveConfigService().Build(project, serviceId, environmentId).Where(x => !x.Missing).ToDictionary(x => x.Variable.Id);
@@ -34,13 +36,14 @@ namespace EnvSecured.Core.Rendering
                 }
             }
 
-            var folder = Path.Combine(outputRoot, "apps", service.OutputFolder ?? service.Name);
+            var folder = Path.Combine(outputRoot, "apps", OutputFolderPathSegment(service));
             Directory.CreateDirectory(folder);
             File.WriteAllLines(Path.Combine(folder, $".env.{environment.Name}.local"), lines);
         }
 
         public void ExportExamples(ProjectModel project, string outputRoot)
         {
+            ValidateUniqueOutputFolders(project);
             foreach (var service in project.Services.Where(s => s.IsActive))
             {
                 var lines = new List<string> { Header.TrimEnd() };
@@ -51,13 +54,34 @@ namespace EnvSecured.Core.Rendering
                 foreach (var variable in variables)
                 {
                     var contract = project.Contracts.FirstOrDefault(c => c.VariableId == variable.Id && c.ServiceId == service.Id && !c.Excluded);
-                    lines.Add($"{variable.Key}={contract?.ExampleValue ?? variable.DefaultExampleValue ?? string.Empty}");
+                    lines.Add($"{variable.Key}={contract?.DemoValue ?? variable.DemoValue ?? string.Empty}");
                 }
 
-                var folder = Path.Combine(outputRoot, "apps", service.OutputFolder ?? service.Name);
+                var folder = Path.Combine(outputRoot, "apps", OutputFolderPathSegment(service));
                 Directory.CreateDirectory(folder);
                 File.WriteAllLines(Path.Combine(folder, ".env.example"), lines);
             }
+        }
+
+        private static string OutputFolderPathSegment(ServiceModel service)
+        {
+            return service.OutputFolder == null ? service.Name : service.OutputFolder.Trim();
+        }
+
+        private static void ValidateUniqueOutputFolders(ProjectModel project)
+        {
+            var duplicate = project.Services
+                .GroupBy(s => NormalizeOutputFolderKey(s.OutputFolder), StringComparer.OrdinalIgnoreCase)
+                .FirstOrDefault(g => g.Count() > 1);
+            if (duplicate != null)
+            {
+                throw new InvalidOperationException("Service output folder must be unique. Empty output folder can be used by only one service.");
+            }
+        }
+
+        private static string NormalizeOutputFolderKey(string value)
+        {
+            return (value ?? string.Empty).Trim().Replace('/', '\\').Trim('\\');
         }
 
     }

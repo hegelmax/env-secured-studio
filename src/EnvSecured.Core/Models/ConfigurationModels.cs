@@ -1,4 +1,6 @@
 using System;
+using System.Globalization;
+using System.Web.Script.Serialization;
 
 namespace EnvSecured.Core.Models
 {
@@ -46,9 +48,10 @@ namespace EnvSecured.Core.Models
         public bool AllowNull { get; set; }
         public bool AllowBlank { get; set; }
         public bool IsActive { get; set; } = true;
-        public string DefaultExampleValue { get; set; }
-        public string PlaceholderPattern { get; set; }
+        public string DemoValue { get; set; }
+        public string DemoComment { get; set; }
         public string GroupName { get; set; }
+        public string OwnerServiceId { get; set; }
         public int SortOrder { get; set; }
     }
 
@@ -59,7 +62,10 @@ namespace EnvSecured.Core.Models
         public string VariableId { get; set; }
         public bool Excluded { get; set; }
         public bool Required { get; set; } = true;
-        public string ExampleValue { get; set; }
+        public bool ShareWithOtherServices { get; set; } = true;
+        public bool VisibleToService { get; set; } = true;
+        public bool AllowOverride { get; set; } = true;
+        public string DemoValue { get; set; }
         public string Notes { get; set; }
         public int SortOrder { get; set; }
     }
@@ -75,6 +81,48 @@ namespace EnvSecured.Core.Models
         public string Value { get; set; }
         public EncryptedPayload EncryptedValue { get; set; }
         public string Notes { get; set; }
-        public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
+        public string UpdatedAt { get; set; } = FormatUpdatedAt(DateTime.UtcNow);
+
+        [ScriptIgnore]
+        public DateTime UpdatedAtUtc
+        {
+            get { return ParseUpdatedAt(UpdatedAt); }
+            set { UpdatedAt = FormatUpdatedAt(value); }
+        }
+
+        private static string FormatUpdatedAt(DateTime value)
+        {
+            return value.ToUniversalTime().ToString("o", CultureInfo.InvariantCulture);
+        }
+
+        private static DateTime ParseUpdatedAt(string value)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                return DateTime.MinValue;
+            }
+
+            if (value.StartsWith("/Date(", StringComparison.Ordinal) && value.EndsWith(")/", StringComparison.Ordinal))
+            {
+                var milliseconds = value.Substring(6, value.Length - 8);
+                var offsetIndex = milliseconds.IndexOfAny(new[] { '+', '-' }, 1);
+                if (offsetIndex > 0)
+                {
+                    milliseconds = milliseconds.Substring(0, offsetIndex);
+                }
+
+                if (long.TryParse(milliseconds, NumberStyles.Integer, CultureInfo.InvariantCulture, out var unixMilliseconds))
+                {
+                    return DateTimeOffset.FromUnixTimeMilliseconds(unixMilliseconds).UtcDateTime;
+                }
+            }
+
+            if (DateTime.TryParse(value, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out var parsed))
+            {
+                return parsed;
+            }
+
+            return DateTime.MinValue;
+        }
     }
 }

@@ -26,6 +26,10 @@ namespace EnvSecured.Core.Services
                 File.Delete(path);
             }
             File.Move(tempPath, path);
+            if (File.Exists(backupPath))
+            {
+                File.Delete(backupPath);
+            }
         }
 
         public string GetRecoveryBackupPath(string path)

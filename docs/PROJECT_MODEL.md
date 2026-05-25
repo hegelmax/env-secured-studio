@@ -4,12 +4,12 @@ EnvSecured Studio stores the project vault as JSON.
 
 ## Main Concepts
 
-- Project: top-level vault with project metadata, settings, services, environments, variables, values, contracts, and crypto metadata.
-- Service: application/service that consumes a subset of variables. Services can allow or forbid using shared interpolated variables without an explicit contract.
+- Project: top-level vault with project metadata, settings, services, environments, variables, values, service scopes, and crypto metadata.
+- Service: application/service that consumes a scoped subset of variables.
 - Environment: deployment environment such as `dev`, `test`, or `prod`.
 - Variable: key metadata such as display name, secret flag, allow-shared-secret, allow-null, and allow-blank.
 - Value: scoped value for a variable.
-- Contract: whether a service uses a variable, and whether it is required for that service.
+- Service scope entry: whether a service can see, override, and export a variable.
 
 ## Value Scope Priority
 
@@ -26,26 +26,28 @@ The most specific available value wins.
 
 ## Interpolation
 
-Values can reference other variables with `${KEY}`:
+Values can reference other variables with `{{KEY}}`:
 
 ```text
-DATABASE_URL=Server=${DATABASE_HOST};User=${DATABASE_USER}
+DATABASE_URL=Server={{DATABASE_HOST}};User={{DATABASE_USER}}
 ```
 
 Bare `{KEY}` text is treated as a literal and is not interpolated.
 
+When a variable key is renamed in the UI, EnvSecured can update exact interpolation tokens from `{{OLD_KEY}}` to `{{NEW_KEY}}`. CLI `edit-var --new-key` does the same by default unless `--update-refs false` is provided.
+
 Validation checks that referenced variables exist, have effective values, and do not create cycles.
 
-For variables explicitly used by a service, interpolation can also require contracts for referenced service-scoped variables. Missing interpolation contracts are warnings when the service allows shared variables without contracts, or errors when it does not. Global and environment-scoped referenced values do not require service contracts.
+For service-owned variables, interpolation requires the referenced variable to be in the current service scope. Missing scope is reported by validation.
 
 ## Required Values
 
-`Required` is stored on a service contract, not on the variable itself.
+`Required` is stored on the service scope entry, not on the variable itself.
 
-- A used variable with `Required = true` must have an effective value for each active service/environment pair.
+- A scoped variable with `Required = true` must have an effective value for each active service/environment pair.
 - If the value is missing and `AllowNull` is false, validation emits `REQUIRED_VALUE_MISSING`.
 - If the value is an empty string and `AllowBlank` is false, validation emits `REQUIRED_VALUE_BLANK`.
-- A used variable with `Required = false` is optional.
+- A scoped variable with `Required = false` is optional.
 
 ## Duplicate Values
 
@@ -73,6 +75,7 @@ global+env:   apps\.env.{env}{.ext}
 service:      apps\{service}\.env{.ext}
 service+env:  apps\{service}\.env.{env}{.ext}
 single file:  {project_name}{.ext}
+manifest:     apps\{service}\.env.example
 ```
 
 Supported placeholders:
@@ -83,3 +86,44 @@ Supported placeholders:
 {env}
 {.ext}
 ```
+
+## Service Manifests
+
+Export can render data files, service manifest files, or both. When `OutputServiceManifest` is enabled, export writes one manifest per rendered service. `OutputDataFiles` controls whether real data export files are rendered. The default mask is:
+
+```text
+apps\{service}\.env.example
+```
+
+Manifest files contain the active variables used by the service. Manifest values can be configured as empty values or demo values:
+
+```text
+DATABASE_HOST=
+DATABASE_PASSWORD=
+```
+
+Demo manifests use `KEY={DemoValue} # {DemoComment}`.
+
+Variables are included when export is enabled for that service scope.
+
+## Service Scope
+
+A variable is owned by exactly one service (`OwnerServiceId = service id`). Project-wide variables should be owned by a normal service chosen by the project, for example `project`. Other services are dependents and must be explicitly scoped in.
+
+A service scope has independent flags:
+
+- `VisibleToService = true` means the variable is in that service scope.
+- `AllowOverride = true` means the scoped dependent service may override the owner value.
+- `Excluded = false` means the variable is exported for that service.
+
+The owner service is always in scope and can always override its own variable. Export is configured independently for each scoped service.
+
+The UI Scope Matrix exposes these combinations:
+
+- `NONE`: not in scope, no override, no export.
+- `Read`: in scope, can be referenced, cannot be overridden or exported directly.
+- `Override`: in scope and can be overridden, not exported directly.
+- `Export`: in scope and exported directly, cannot be overridden.
+- `Full`: in scope, can be overridden, and exported directly.
+
+When ownership changes, EnvSecured can move existing owner values to the new owner without overwriting direct values already present in the target owner scope.

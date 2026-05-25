@@ -2,7 +2,7 @@
 
 EnvSecured Studio is a Windows desktop and CLI tool for managing service/environment configuration in one encrypted project vault.
 
-It is built for teams that need to keep variables, secrets, service contracts, imports, validation, and exported runtime config files in one place without introducing a server or database.
+It is built for teams that need to keep variables, secrets, service scopes, imports, validation, and exported runtime config files in one place without introducing a server or database.
 
 ## Features
 
@@ -14,12 +14,13 @@ It is built for teams that need to keep variables, secrets, service contracts, i
 - Per-project password support with optional DPAPI local key cache.
 - Service and environment scoped values with inheritance.
 - Effective value priority compatible with config file layering: global, environment, other services, and current service overrides.
-- `${VARIABLE_NAME}` interpolation and validation.
-- Service contract matrix for variable usage and required values.
+- `{{VARIABLE_NAME}}` interpolation and validation.
+- Scope matrix for variable access, override permission, and export per service.
 - Explicit controls for shared service variables and intentionally shared secrets.
 - Import from one or more text config files.
 - Export to CONFIG, TOML, YAML, XML, or JSON.
 - Multi-file export by service/environment or structured single-file export.
+- Service manifests such as `.env.example` with empty values or demo lines like `KEY=value # comment`.
 
 ## Requirements
 

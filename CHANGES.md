@@ -1,5 +1,31 @@
 # Changelog
 
+## 1.1.0.5
+
+- Added optional service manifest export for files such as `.env.example`, containing variables published to each service.
+- Added explicit export render modes for data files only, manifest files only, or both.
+- Added configurable service manifest values: empty or demo lines (`KEY=value # comment`), and renamed variable demo fields to `DemoValue` / `DemoComment`.
+- Added scoped service ownership for variables with per-service scope, override permission, and export settings.
+- Removed standalone global variable ownership from the UI/model flow; project-wide variables should use a normal project-defined owner service.
+- Replaced the Contracts screen with a Scope Matrix using explicit `NONE`, `Read`, `Override`, `Export`, and `Full` modes per variable/service pair.
+- Replaced the short variable rename prompt with a full Variable Card for metadata, owner, flags, and service scope modes.
+- Added owner and scope filters plus an explicit Owner column to the main Variables grid.
+- Added an Export checkbox column to the main Variables grid when a concrete Scope service filter is selected.
+- Simplified the Variables toolbar and moved `Light matrix colors` next to the lower service values matrix.
+- Expanded the selected-variable details panel with owner, group, demo value, demo comment, and description.
+- Updated import so imported variables receive an owner service and imported service values create matching scope, override, and export permissions.
+- Changed service output folder handling so an empty output folder exports `{service}` masks into the output root segment, and service output folders must be unique.
+- Added warnings when removing a variable from a service scope while that service still references it through interpolation.
+- Added optional owner-value migration when changing a variable owner.
+- Added interpolation reference updates when renaming variables from `{{OLD_KEY}}` to `{{NEW_KEY}}` in UI and CLI.
+- Added a CLI guard that blocks encryption downgrades unless `--allow-security-downgrade true` is passed explicitly.
+- Fixed opening vault files that contain legacy JavaScript `/Date(...)\/` timestamps in value metadata; new saves write ISO-8601 timestamps instead.
+- Fixed the variable details matrix so disabling service scope no longer hides existing or inherited values for that service.
+- Fixed variable matrix direct/inherited styling for values inherited from other services.
+- Reduced Export target matrix flicker when using Select All or Select None.
+- Polished the WinForms shell with embedded toolbar/navigation icons, Quick Stats, a vault protection indicator, and a dedicated Variables page header.
+- Updated application versioning to `1.1.0.5`; update binary names still use the public `X.Y.Z` release version such as `EnvSecured_v1.1.0.exe`.
+
 ## 1.0.4
 
 - Reworked the About dialog into a product-style window with the application icon, version, GitHub link, copyright, description, executable path, host name, OS version, and .NET runtime.
@@ -19,7 +45,7 @@
 - Added CLI commands for file association and updates: `--register-association`, `--unregister-association`, `--check-update`, and `--download-update`.
 - Added startup update checks in the UI and `app.version.cs` as the public version metadata file used by update checks.
 - Fixed CLI config import parsing for single-character quote values such as `KEY="` and `KEY='`.
-- Removed bare `{KEY}` interpolation; only `${KEY}` is interpolated to avoid conflicts with template-like literals and paths.
+- Removed bare `{KEY}` interpolation; only `{{KEY}}` is interpolated to avoid conflicts with template-like literals and paths.
 - Expanded unit test coverage for crypto tampering, encrypted envelope detection, effective values, validation branches, CLI config parsing, and literal brace handling.
 - Updated CLI, build, project model, and README documentation for `.envs`, update checks, and interpolation syntax.
 
@@ -44,7 +70,7 @@
 - Updated effective value inheritance to match the intended config loading order, including values from other services before current-service overrides.
 - Improved validation for interpolation contracts, shared service variables, required values, blank values, and intentionally shared secrets.
 - Added `Allow shared secret` for variables and `Allow without explicit contract` for services.
-- Improved Variables UI ergonomics: stable matrix refresh after edits, editing inherited values, context-menu copy actions, `${KEY}` copy, and direct value deletion.
+- Improved Variables UI ergonomics: stable matrix refresh after edits, editing inherited values, context-menu copy actions, `{{KEY}}` copy, and direct value deletion.
 - Expanded CLI coverage so vaults can be managed without the UI: edit/delete services, environments, and variables; update project metadata; manage export targets; and run auto-assign.
 - Fixed recovery backup cleanup when closing without saving.
 

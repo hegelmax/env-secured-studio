@@ -34,7 +34,7 @@ namespace EnvSecured.Tests
             var host = AddVariable(project, "host", "HOST");
             var url = AddVariable(project, "url", "URL");
             AddValue(project, host.Id, ValueScope.Global, null, null, "https://example.test");
-            AddValue(project, url.Id, ValueScope.Service, "backend", null, "${HOST}/api");
+            AddValue(project, url.Id, ValueScope.Service, "backend", null, "{{HOST}}/api");
 
             var effective = new EffectiveConfigService().Build(project, "backend", "test").Single(v => v.Variable.Id == url.Id);
 
@@ -53,6 +53,20 @@ namespace EnvSecured.Tests
             var effective = new EffectiveConfigService().Build(project, "backend", "test").Single(v => v.Variable.Id == path.Id);
 
             Assert.Equal(@"apps\{HOST}\data", effective.Value);
+        }
+
+        [Fact]
+        public void Build_DoesNotInterpolateDollarBraceTokens()
+        {
+            var project = CreateProject();
+            var host = AddVariable(project, "host", "HOST");
+            var path = AddVariable(project, "path", "PATH_VALUE");
+            AddValue(project, host.Id, ValueScope.Global, null, null, "example.test");
+            AddValue(project, path.Id, ValueScope.Global, null, null, "${HOST}/api");
+
+            var effective = new EffectiveConfigService().Build(project, "backend", "test").Single(v => v.Variable.Id == path.Id);
+
+            Assert.Equal("${HOST}/api", effective.Value);
         }
 
         [Fact]
@@ -95,6 +109,55 @@ namespace EnvSecured.Tests
             Assert.Equal(ValueScope.Global, effective.SourceScope);
             Assert.Null(effective.SourceServiceId);
             Assert.Null(effective.SourceEnvironmentId);
+        }
+
+        [Fact]
+        public void Build_DoesNotInheritOwnerServiceValueWhenServiceIsOutOfScope()
+        {
+            var project = CreateProject();
+            var variable = AddVariable(project, "internal", "INTERNAL_VALUE");
+            variable.OwnerServiceId = "frontend";
+            AddValue(project, variable.Id, ValueScope.Service, "frontend", null, "frontend-only");
+            project.Contracts.Add(new VariableContractModel
+            {
+                VariableId = variable.Id,
+                ServiceId = "backend",
+                Excluded = true,
+                Required = false,
+                VisibleToService = false,
+                AllowOverride = false
+            });
+
+            var backend = new EffectiveConfigService().Build(project, "backend", "test").Single(v => v.Variable.Id == variable.Id);
+            var frontend = new EffectiveConfigService().Build(project, "frontend", "test").Single(v => v.Variable.Id == variable.Id);
+
+            Assert.True(backend.Missing);
+            Assert.Equal("frontend-only", frontend.Value);
+            Assert.Equal("frontend", frontend.SourceServiceId);
+        }
+
+        [Fact]
+        public void Build_AllowsDependentServiceOverrideOnlyWhenEnabled()
+        {
+            var project = CreateProject();
+            var variable = AddVariable(project, "owned", "OWNED_VALUE");
+            variable.OwnerServiceId = "frontend";
+            AddValue(project, variable.Id, ValueScope.Service, "frontend", null, "owner");
+            AddValue(project, variable.Id, ValueScope.Service, "backend", null, "backend");
+            project.Contracts.Add(new VariableContractModel
+            {
+                VariableId = variable.Id,
+                ServiceId = "backend",
+                VisibleToService = true,
+                AllowOverride = false
+            });
+
+            var effective = new EffectiveConfigService().Build(project, "backend", "test").Single(v => v.Variable.Id == variable.Id);
+            Assert.Equal("owner", effective.Value);
+
+            project.Contracts.Single().AllowOverride = true;
+            effective = new EffectiveConfigService().Build(project, "backend", "test").Single(v => v.Variable.Id == variable.Id);
+            Assert.Equal("backend", effective.Value);
         }
 
         private static ProjectModel CreateProject()

@@ -32,6 +32,10 @@ namespace EnvSecured.Core.Models
         public string OutputServiceEnvironmentMask { get; set; } = @"apps\{service}\.env.{env}{.ext}";
         public bool OutputStructuredSingleFile { get; set; }
         public string OutputStructuredSingleFileMask { get; set; } = @"{project_name}{.ext}";
+        public bool OutputServiceManifest { get; set; }
+        public bool OutputDataFiles { get; set; } = true;
+        public string OutputServiceManifestMask { get; set; } = @"apps\{service}\.env.example";
+        public string OutputServiceManifestValueMode { get; set; } = "Empty";
         public List<OutputTargetSetting> OutputTargets { get; set; } = new List<OutputTargetSetting>();
         public bool CliExportPasswordRequiredPolicy { get; set; } = true;
         public EncryptedPayload CliExportPasswordRequiredEncrypted { get; set; }

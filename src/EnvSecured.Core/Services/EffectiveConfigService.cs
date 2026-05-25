@@ -17,7 +17,7 @@ namespace EnvSecured.Core.Services
 
     public sealed class EffectiveConfigService
     {
-        private static readonly Regex TokenRegex = new Regex(@"\$\{(?<key>[A-Za-z_][A-Za-z0-9_]*)\}", RegexOptions.Compiled);
+        private static readonly Regex TokenRegex = new Regex(@"\{\{(?<key>[A-Za-z_][A-Za-z0-9_]*)\}\}", RegexOptions.Compiled);
 
         public IReadOnlyList<EffectiveValue> Build(ProjectModel project, string serviceId, string environmentId)
         {
@@ -86,6 +86,27 @@ namespace EnvSecured.Core.Services
 
         private static IEnumerable<VariableValueModel> BuildValuePrecedence(ProjectModel project, string variableId, string serviceId, string environmentId)
         {
+            var variable = project.Variables.FirstOrDefault(v => v.Id == variableId);
+            if (!string.IsNullOrWhiteSpace(variable?.OwnerServiceId))
+            {
+                if (!ProjectService.IsVariableVisibleToService(project, variable, serviceId))
+                {
+                    yield break;
+                }
+
+                yield return FindLastValue(project, variableId, ValueScope.Service, variable.OwnerServiceId, null);
+                yield return FindLastValue(project, variableId, ValueScope.ServiceEnvironment, variable.OwnerServiceId, environmentId);
+
+                if (!string.Equals(variable.OwnerServiceId, serviceId, System.StringComparison.Ordinal) &&
+                    ProjectService.CanOverrideVariableForService(project, variable, serviceId))
+                {
+                    yield return FindLastValue(project, variableId, ValueScope.Service, serviceId, null);
+                    yield return FindLastValue(project, variableId, ValueScope.ServiceEnvironment, serviceId, environmentId);
+                }
+
+                yield break;
+            }
+
             yield return FindLastValue(project, variableId, ValueScope.Global, null, null);
             yield return FindLastValue(project, variableId, ValueScope.Environment, null, environmentId);
 
@@ -96,6 +117,11 @@ namespace EnvSecured.Core.Services
                     .OrderBy(s => s.SortOrder)
                     .ThenBy(s => s.Name))
                 {
+                    if (!ProjectService.IsVariableSharedFromService(project, variableId, service.Id))
+                    {
+                        continue;
+                    }
+
                     yield return FindLastValue(project, variableId, ValueScope.Service, service.Id, null);
                     yield return FindLastValue(project, variableId, ValueScope.ServiceEnvironment, service.Id, environmentId);
                 }

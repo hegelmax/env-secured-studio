@@ -8,7 +8,7 @@ namespace EnvSecured.Core.Validation
 {
     public sealed class ValidationService
     {
-        private static readonly Regex TokenRegex = new Regex(@"\$\{(?<key>[A-Za-z_][A-Za-z0-9_]*)\}", RegexOptions.Compiled);
+        private static readonly Regex TokenRegex = new Regex(@"\{\{(?<key>[A-Za-z_][A-Za-z0-9_]*)\}\}", RegexOptions.Compiled);
 
         public IReadOnlyList<ValidationResult> Validate(ProjectModel project, string serviceId = null, string environmentId = null)
         {
@@ -94,7 +94,7 @@ namespace EnvSecured.Core.Validation
             foreach (var item in effective.Values.Where(x =>
                 !x.Missing &&
                 !string.IsNullOrEmpty(x.Value) &&
-                HasExplicitContract(project, serviceId, x.Variable.Id)))
+                IsInServiceScope(project, serviceId, x.Variable)))
             {
                 foreach (var token in ExtractTokens(item.Value).Distinct())
                 {
@@ -113,7 +113,7 @@ namespace EnvSecured.Core.Validation
                     var referencedVariable = project.Variables.First(v => v.Key == token);
                     if (referencedVariable.Id != item.Variable.Id &&
                         IsServiceScoped(referenced) &&
-                        !HasExplicitContract(project, serviceId, referencedVariable.Id))
+                        !IsInServiceScope(project, serviceId, referencedVariable))
                     {
                         var service = project.Services.FirstOrDefault(s => s.Id == serviceId);
                         var message = $"Interpolated variable '{token}' has no explicit contract for this service.";
@@ -210,6 +210,11 @@ namespace EnvSecured.Core.Validation
                 c.ServiceId == serviceId &&
                 c.VariableId == variableId &&
                 !c.Excluded);
+        }
+
+        private static bool IsInServiceScope(ProjectModel project, string serviceId, VariableDefinitionModel variable)
+        {
+            return ProjectService.IsVariableVisibleToService(project, variable, serviceId);
         }
 
         private static bool IsServiceScoped(EffectiveValue value)

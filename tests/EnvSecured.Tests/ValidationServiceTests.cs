@@ -27,8 +27,8 @@ namespace EnvSecured.Tests
             var second = AddVariable(project, "second", "SECOND");
             project.Contracts.Add(new VariableContractModel { ServiceId = "backend", VariableId = first.Id, Required = true });
             project.Contracts.Add(new VariableContractModel { ServiceId = "backend", VariableId = second.Id, Required = true });
-            AddValue(project, first.Id, ValueScope.Global, null, null, "${SECOND}");
-            AddValue(project, second.Id, ValueScope.Global, null, null, "${FIRST}");
+            AddValue(project, first.Id, ValueScope.Global, null, null, "{{SECOND}}");
+            AddValue(project, second.Id, ValueScope.Global, null, null, "{{FIRST}}");
 
             var results = new ValidationService().Validate(project, "backend", "test");
 
@@ -42,6 +42,19 @@ namespace EnvSecured.Tests
             var variable = AddVariable(project, "path", "PATH_VALUE");
             project.Contracts.Add(new VariableContractModel { ServiceId = "backend", VariableId = variable.Id, Required = true });
             AddValue(project, variable.Id, ValueScope.Global, null, null, @"apps\{MISSING}\data");
+
+            var results = new ValidationService().Validate(project, "backend", "test");
+
+            Assert.DoesNotContain(results, r => r.Code.StartsWith("INTERPOLATION_"));
+        }
+
+        [Fact]
+        public void Validate_DoesNotTreatDollarBraceTextAsInterpolation()
+        {
+            var project = CreateProject();
+            var variable = AddVariable(project, "path", "PATH_VALUE");
+            project.Contracts.Add(new VariableContractModel { ServiceId = "backend", VariableId = variable.Id, Required = true });
+            AddValue(project, variable.Id, ValueScope.Global, null, null, @"apps\${MISSING}\data");
 
             var results = new ValidationService().Validate(project, "backend", "test");
 
@@ -115,6 +128,25 @@ namespace EnvSecured.Tests
             var results = new ValidationService().Validate(project, "backend", "test");
 
             Assert.DoesNotContain(results, r => r.Code == "REQUIRED_VALUE_MISSING");
+        }
+
+        [Fact]
+        public void Validate_DoesNotReportInterpolationContractMissingWhenReferenceIsInScopeButNotExported()
+        {
+            var project = CreateProject();
+            var source = AddVariable(project, "source", "SOURCE_VALUE");
+            source.OwnerServiceId = "global";
+            var composed = AddVariable(project, "composed", "COMPOSED_VALUE");
+            composed.OwnerServiceId = "backend";
+            project.Services.Add(new ServiceModel { Id = "global", Name = "global" });
+            project.Contracts.Add(new VariableContractModel { ServiceId = "backend", VariableId = source.Id, VisibleToService = true, AllowOverride = false, Excluded = true });
+            project.Contracts.Add(new VariableContractModel { ServiceId = "backend", VariableId = composed.Id, VisibleToService = true, Excluded = false });
+            AddValue(project, source.Id, ValueScope.Service, "global", null, "value");
+            AddValue(project, composed.Id, ValueScope.Service, "backend", null, "{{SOURCE_VALUE}}");
+
+            var results = new ValidationService().Validate(project, "backend", "test");
+
+            Assert.DoesNotContain(results, r => r.Code == "INTERPOLATION_CONTRACT_MISSING");
         }
 
         private static ProjectModel CreateProject()

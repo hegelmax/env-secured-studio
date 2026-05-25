@@ -53,27 +53,37 @@ EnvSecured.exe add-var --file C:\project\envsecured.envs --key DATABASE_HOST --a
 EnvSecured.exe add-var --file C:\project\envsecured.envs --key DATABASE_PASSWORD --secret
 EnvSecured.exe add-var --file C:\project\envsecured.envs --key SHARED_TOKEN --secret --allow-shared-secret
 EnvSecured.exe edit-var --file C:\project\envsecured.envs --key DATABASE_PASSWORD --secret true --allow-shared-secret false
-EnvSecured.exe edit-var --file C:\project\envsecured.envs --key DATABASE_HOST --new-key DATABASE_SERVER --display "Database server" --group Database --allow-null false --allow-blank false --active true
+EnvSecured.exe edit-var --file C:\project\envsecured.envs --key DATABASE_HOST --new-key DATABASE_SERVER --update-refs true --display "Database server" --group Database --owner-service backend --move-owner-values true --allow-null false --allow-blank false --active true
 EnvSecured.exe delete-var --file C:\project\envsecured.envs --key OLD_VARIABLE
 EnvSecured.exe set --file C:\project\envsecured.envs --key DATABASE_HOST --value 127.0.0.1 --service backend --env dev
 EnvSecured.exe delete-value --file C:\project\envsecured.envs --key DATABASE_HOST --service backend --env dev
-EnvSecured.exe use --file C:\project\envsecured.envs --key DATABASE_HOST --service backend
-EnvSecured.exe unuse --file C:\project\envsecured.envs --key DATABASE_HOST --service backend
+EnvSecured.exe use --file C:\project\envsecured.envs --key DATABASE_HOST --service backend --visible true --override false
+EnvSecured.exe unuse --file C:\project\envsecured.envs --key DATABASE_HOST --service backend --visible true --override false
 EnvSecured.exe auto-assign --file C:\project\envsecured.envs
 EnvSecured.exe compact-values --file C:\project\envsecured.envs
 ```
 
-Use `global` for global service or environment scope:
+Use an explicit service owner for project-wide variables, for example `project`:
 
 ```powershell
-EnvSecured.exe set --file C:\project\envsecured.envs --key PROJECT_NAME --value app --service global --env global
+EnvSecured.exe set --file C:\project\envsecured.envs --key PROJECT_NAME --value app --service project --env global
 ```
 
-Use `--optional` to create a service contract where the variable is used but a value is not required:
+Use `--optional` to create a service scope entry where the variable is available but a value is not required:
 
 ```powershell
 EnvSecured.exe use --file C:\project\envsecured.envs --key FEATURE_FLAG --service backend --optional
 ```
+
+Variables are owned by one service. Use `edit-var --owner-service <service>` to bind a variable to its parent service. EnvSecured no longer creates a mandatory built-in global service; create a normal service such as `project` if you want one owner for project-wide variables.
+
+When `edit-var --owner-service` changes the owner, owner values are moved to the new owner by default if the target layer has no direct value. Pass `--move-owner-values false` to change only ownership metadata.
+
+When `edit-var --new-key` renames a variable, interpolation references such as `{{OLD_KEY}}` are updated to `{{NEW_KEY}}` by default. Pass `--update-refs false` to rename only the variable definition.
+
+`use` controls export for the service. `--visible true|false` controls whether the variable is in that service scope. `--override true|false` controls whether that service may override the owner value. This means `unuse --visible true --override false` can keep a variable visible for interpolation without exporting it and without allowing local overrides.
+
+When removing a variable from a service scope with `--visible false`, CLI checks whether that service still references `{{KEY}}`. If references exist, pass `--allow-broken-scope true` to confirm.
 
 `compact-values` removes duplicate value records for the same variable/scope and keeps the last record, matching runtime resolution.
 
@@ -94,7 +104,9 @@ EnvSecured.exe import --file C:\project\envsecured.envs --input "C:\a.env;C:\b.e
 ```powershell
 EnvSecured.exe settings --file C:\project\envsecured.envs --output-root C:\project\out --format CONFIG --ext .env
 EnvSecured.exe settings --file C:\project\envsecured.envs --single-file true --single-file-mask "{project_name}{.ext}"
+EnvSecured.exe settings --file C:\project\envsecured.envs --render-mode both --manifest-mask "apps\{service}\.env.example" --manifest-values demo
 EnvSecured.exe settings --file C:\project\envsecured.envs --encryption secrets-only
+EnvSecured.exe settings --file C:\project\envsecured.envs --encryption open --allow-security-downgrade true
 EnvSecured.exe settings --file C:\project\envsecured.envs --cli-export-password true --password "secret"
 EnvSecured.exe export-target --file C:\project\envsecured.envs --service backend --env dev --enabled true
 EnvSecured.exe export-target --file C:\project\envsecured.envs --all --enabled false
@@ -121,6 +133,8 @@ all-values
 whole-json
 ```
 
+CLI refuses encryption downgrades unless they are explicitly confirmed with `--allow-security-downgrade true`. Downgrades include `whole-json` to any lower mode, `all-values` to `secrets-only` or `open`, and `secrets-only` to `open`.
+
 ## Export
 
 Use saved export settings:
@@ -140,6 +154,16 @@ Export a specific service/environment:
 ```powershell
 EnvSecured.exe export --file C:\project\envsecured.envs --service backend --env dev --output-root C:\project\out
 ```
+
+Render service manifests with empty values, such as `.env.example`:
+
+```powershell
+EnvSecured.exe export --file C:\project\envsecured.envs --all --render-mode manifest --manifest-mask "apps\{service}\.env.example"
+```
+
+Service manifests contain active variables used by each rendered service. Manifest values can be `empty` or `demo`; demo writes `KEY={DemoValue} # {DemoComment}`.
+
+`--render-mode` accepts `data`, `manifest`, or `both`. `--data true|false` and `--manifest true|false` are also available for explicit scripting.
 
 ## Export Password
 
