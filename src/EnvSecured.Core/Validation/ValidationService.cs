@@ -42,6 +42,7 @@ namespace EnvSecured.Core.Validation
             }
             ValidateDuplicateValues(project, results);
             ValidateRepeatedEnvironmentSecrets(project, results);
+            ValidateGeneratedValues(project, results);
 
             if (serviceId != null && environmentId != null)
             {
@@ -140,20 +141,21 @@ namespace EnvSecured.Core.Validation
         {
             foreach (var variable in project.Variables.Where(v => v.IsSecret))
             {
-                var globalValue = project.Values.LastOrDefault(v =>
+                var globalEnvironmentValues = project.Values.Where(v =>
                     v.VariableId == variable.Id &&
-                    v.Scope == ValueScope.Global &&
                     v.EnvironmentId == null &&
-                    v.ServiceId == null &&
                     HasStoredValue(v));
-                if (globalValue != null && !variable.AllowSharedSecret)
+                if (!variable.AllowSharedSecret)
                 {
-                    results.Add(Warning(
-                        "SECRET_GLOBAL_FOR_ALL_ENVIRONMENTS",
-                        "Secret is defined globally and will be reused across all environments.",
-                        variable.Id,
-                        null,
-                        null));
+                    foreach (var globalValue in globalEnvironmentValues)
+                    {
+                        results.Add(Error(
+                            "SECRET_GLOBAL_FOR_ALL_ENVIRONMENTS",
+                            "Secret is defined in the Global environment and will be reused across environments. Enable Shared secret if this is intentional.",
+                            variable.Id,
+                            globalValue.ServiceId,
+                            null));
+                    }
                 }
 
                 if (variable.AllowSharedSecret) continue;
@@ -196,6 +198,47 @@ namespace EnvSecured.Core.Validation
                     group.Key.VariableId,
                     group.Key.ServiceId,
                     group.Key.EnvironmentId));
+            }
+        }
+
+        private static void ValidateGeneratedValues(ProjectModel project, List<ValidationResult> results)
+        {
+            var generator = new GeneratedValueService();
+            foreach (var variable in project.Variables.Where(v => v.IsActive && v.IsGenerated))
+            {
+                var environments = GeneratedValueService.NormalizeScope(variable.GeneratorScope) == GeneratedValueService.ScopeOwnerEnvironment
+                    ? project.Environments.Where(e => e.IsActive).Select(e => e.Id).ToList()
+                    : new List<string> { null };
+
+                foreach (var environmentId in environments)
+                {
+                    CanonicalGeneratedValueTarget target;
+                    try
+                    {
+                        target = generator.BuildCanonicalTarget(variable, environmentId);
+                    }
+                    catch
+                    {
+                        results.Add(Error("GENERATED_VALUE_SCOPE_INVALID", "Generated variable has invalid generator scope.", variable.Id, variable.OwnerServiceId, environmentId));
+                        continue;
+                    }
+
+                    var value = project.Values.LastOrDefault(v =>
+                        v.VariableId == variable.Id &&
+                        v.Scope == target.Scope &&
+                        v.ServiceId == target.ServiceId &&
+                        v.EnvironmentId == target.EnvironmentId &&
+                        HasStoredValue(v));
+                    if (value == null)
+                    {
+                        results.Add(Error(
+                            "GENERATED_VALUE_MISSING",
+                            "Generated variable has no canonical value. Generate it first.",
+                            variable.Id,
+                            target.ServiceId,
+                            target.EnvironmentId));
+                    }
+                }
             }
         }
 

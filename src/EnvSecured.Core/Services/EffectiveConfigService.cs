@@ -12,6 +12,7 @@ namespace EnvSecured.Core.Services
         public ValueScope? SourceScope { get; set; }
         public string SourceServiceId { get; set; }
         public string SourceEnvironmentId { get; set; }
+        public string SourceUpdatedAt { get; set; }
         public bool Missing => SourceScope == null;
     }
 
@@ -80,7 +81,8 @@ namespace EnvSecured.Core.Services
                 Value = selected?.Value,
                 SourceScope = selected?.Scope,
                 SourceServiceId = selected?.ServiceId,
-                SourceEnvironmentId = selected?.EnvironmentId
+                SourceEnvironmentId = selected?.EnvironmentId,
+                SourceUpdatedAt = selected?.UpdatedAt
             };
         }
 

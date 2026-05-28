@@ -48,6 +48,7 @@ namespace EnvSecured.WinForms.Cli
                     case "info": return WithProject(options, p => PrintInfo(p));
                     case "validate": return WithProject(options, p => Validate(p));
                     case "list": return WithProject(options, p => List(p, options));
+                    case "get": return WithProject(options, p => GetValue(p, options), true);
                     case "add-service": return WithProjectSave(options, p => AddService(p, options));
                     case "edit-service": return WithProjectSave(options, p => EditService(p, options));
                     case "delete-service": return WithProjectSave(options, p => DeleteService(p, options));
@@ -59,6 +60,7 @@ namespace EnvSecured.WinForms.Cli
                     case "delete-var": return WithProjectSave(options, p => DeleteVariable(p, options));
                     case "set": return WithProjectSave(options, p => SetValue(p, options));
                     case "delete-value": return WithProjectSave(options, p => DeleteValue(p, options));
+                    case "generate": return WithProjectSave(options, p => GenerateValue(p, options));
                     case "use": return WithProjectSave(options, p => SetContract(p, options, true));
                     case "unuse": return WithProjectSave(options, p => SetContract(p, options, false));
                     case "import": return WithProjectSave(options, p => ImportConfig(p, options));
@@ -92,6 +94,7 @@ namespace EnvSecured.WinForms.Cli
                 case "info":
                 case "validate":
                 case "list":
+                case "get":
                 case "add-service":
                 case "edit-service":
                 case "delete-service":
@@ -103,6 +106,7 @@ namespace EnvSecured.WinForms.Cli
                 case "delete-var":
                 case "set":
                 case "delete-value":
+                case "generate":
                 case "use":
                 case "unuse":
                 case "import":
@@ -254,6 +258,83 @@ namespace EnvSecured.WinForms.Cli
             return 0;
         }
 
+        private static int GetValue(ProjectModel project, Dictionary<string, string> options)
+        {
+            var key = Required(options, "key");
+            var variable = project.Variables.FirstOrDefault(v => Same(v.Key, key) || Same(v.Id, key));
+            if (variable == null)
+            {
+                Error("Variable not found: " + key);
+                return 1;
+            }
+            if (!variable.IsActive)
+            {
+                Error(variable.Key + " is inactive.");
+                return 1;
+            }
+
+            var service = ResolveOptionalService(project, Get(options, "service"));
+            var environment = ResolveOptionalEnvironment(project, Get(options, "env"));
+            var calculated = GetValueCalculatedMode(options);
+            var effective = calculated
+                ? EffectiveConfigService.Build(project, service?.Id, environment?.Id).FirstOrDefault(x => x.Variable.Id == variable.Id)
+                : EffectiveConfigService.BuildRawValue(project, variable, service?.Id, environment?.Id);
+
+            if (effective == null || effective.Missing)
+            {
+                Error(variable.Key + " has no effective value for " + TargetLabel(service, environment) + ".");
+                return 1;
+            }
+
+            var showSecrets = Flag(options, "show-secrets");
+            var displayValue = CliDisplayValue(variable, effective.Value, showSecrets);
+            if (GetValueJsonOutput(options))
+            {
+                Console.WriteLine(new JavaScriptSerializer().Serialize(new
+                {
+                    key = variable.Key,
+                    variableId = variable.Id,
+                    value = displayValue,
+                    calculated,
+                    service = service?.Name,
+                    environment = environment?.Name,
+                    sourceScope = effective.SourceScope?.ToString(),
+                    sourceServiceId = effective.SourceServiceId,
+                    sourceEnvironmentId = effective.SourceEnvironmentId,
+                    updatedAt = effective.SourceUpdatedAt,
+                    isSecret = variable.IsSecret,
+                    masked = variable.IsSecret && !showSecrets
+                }));
+                return 0;
+            }
+
+            Console.WriteLine(displayValue);
+            return 0;
+        }
+
+        private static bool GetValueJsonOutput(Dictionary<string, string> options)
+        {
+            if (Flag(options, "json")) return true;
+            var format = Get(options, "format");
+            return !string.IsNullOrWhiteSpace(format) && Same(format, "json");
+        }
+
+        private static bool GetValueCalculatedMode(Dictionary<string, string> options)
+        {
+            var mode = Get(options, "value");
+            if (!string.IsNullOrWhiteSpace(mode))
+            {
+                if (Same(mode, "raw") || Same(mode, "direct")) return false;
+                if (Same(mode, "calculated") || Same(mode, "effective")) return true;
+                throw new InvalidOperationException("--value must be calculated or raw.");
+            }
+            if (options.ContainsKey("calculated"))
+            {
+                return ParseBool(options["calculated"]);
+            }
+            return true;
+        }
+
         private static int AddService(ProjectModel project, Dictionary<string, string> options)
         {
             var name = Required(options, "name");
@@ -387,7 +468,6 @@ namespace EnvSecured.WinForms.Cli
                     if (updated > 0) Console.WriteLine("Updated " + updated + " interpolation reference(s).");
                 }
             }
-            if (options.ContainsKey("display")) variable.DisplayName = options["display"];
             if (options.ContainsKey("description")) variable.Description = options["description"];
             if (options.ContainsKey("group")) variable.GroupName = options["group"];
             if (options.ContainsKey("type")) variable.Type = ParseVariableType(options["type"]);
@@ -411,6 +491,21 @@ namespace EnvSecured.WinForms.Cli
             if (options.ContainsKey("active")) variable.IsActive = ParseBool(options["active"]);
             if (options.ContainsKey("demo-value")) variable.DemoValue = options["demo-value"];
             if (options.ContainsKey("demo-comment")) variable.DemoComment = options["demo-comment"];
+            if (options.ContainsKey("generated")) variable.IsGenerated = ParseBool(options["generated"]);
+            if (options.ContainsKey("generator")) variable.GeneratorType = GeneratedValueService.NormalizeType(options["generator"]);
+            if (options.ContainsKey("generator-type")) variable.GeneratorType = GeneratedValueService.NormalizeType(options["generator-type"]);
+            if (options.ContainsKey("generator-length")) variable.GeneratorLength = GeneratedValueService.NormalizeLength(ParseInt(options["generator-length"], "generator-length"), variable.GeneratorType);
+            if (options.ContainsKey("generator-scope")) variable.GeneratorScope = GeneratedValueService.NormalizeScope(options["generator-scope"]);
+            if (options.ContainsKey("generator-mode")) variable.GeneratorMode = GeneratedValueService.NormalizeMode(options["generator-mode"]);
+            if (variable.IsGenerated)
+            {
+                variable.IsSecret = true;
+                variable.Type = VariableType.Password;
+                variable.GeneratorType = GeneratedValueService.NormalizeType(variable.GeneratorType);
+                variable.GeneratorLength = GeneratedValueService.NormalizeLength(variable.GeneratorLength, variable.GeneratorType);
+                variable.GeneratorScope = GeneratedValueService.NormalizeScope(variable.GeneratorScope);
+                variable.GeneratorMode = GeneratedValueService.NormalizeMode(variable.GeneratorMode);
+            }
             if (options.ContainsKey("owner-service"))
             {
                 var owner = options["owner-service"];
@@ -425,6 +520,32 @@ namespace EnvSecured.WinForms.Cli
             }
             AutoAssignVariableToMatchingServices(project, variable);
             Console.WriteLine("Updated variable " + variable.Key);
+            return 0;
+        }
+
+        private static int GenerateValue(ProjectModel project, Dictionary<string, string> options)
+        {
+            var variable = FindVariable(project, Required(options, "key")) ?? throw new InvalidOperationException("Variable not found.");
+            if (!variable.IsGenerated)
+            {
+                throw new InvalidOperationException("Variable is not configured as generated.");
+            }
+
+            var generator = new GeneratedValueService();
+            var overwrite = !options.ContainsKey("overwrite") || ParseBool(options["overwrite"]);
+            var scope = GeneratedValueService.NormalizeScope(variable.GeneratorScope);
+            var environmentIds = scope == GeneratedValueService.ScopeOwnerEnvironment
+                ? ResolveGenerateEnvironments(project, options)
+                : new string[] { null };
+
+            var count = 0;
+            foreach (var environmentId in environmentIds)
+            {
+                generator.Generate(project, variable, environmentId, overwrite);
+                count++;
+            }
+
+            Console.WriteLine("Generated " + count + " value(s) for " + variable.Key);
             return 0;
         }
 
@@ -1428,6 +1549,39 @@ namespace EnvSecured.WinForms.Cli
             return new Target(ValueScope.ServiceEnvironment, service.Id, env.Id);
         }
 
+        private static ServiceModel ResolveOptionalService(ProjectModel project, string value)
+        {
+            if (string.IsNullOrWhiteSpace(value) || Same(value, "global")) return null;
+            return FindService(project, value) ?? throw new InvalidOperationException("Service not found: " + value);
+        }
+
+        private static EnvironmentModel ResolveOptionalEnvironment(ProjectModel project, string value)
+        {
+            if (string.IsNullOrWhiteSpace(value) || Same(value, "global")) return null;
+            return FindEnvironment(project, value) ?? throw new InvalidOperationException("Environment not found: " + value);
+        }
+
+        private static string TargetLabel(ServiceModel service, EnvironmentModel environment)
+        {
+            return (service?.Name ?? "global") + "/" + (environment?.Name ?? "global");
+        }
+
+        private static string[] ResolveGenerateEnvironments(ProjectModel project, Dictionary<string, string> options)
+        {
+            if (options.ContainsKey("all-envs") && ParseBool(options["all-envs"]))
+            {
+                return project.Environments.Where(e => e.IsActive).Select(e => e.Id).ToArray();
+            }
+
+            var environment = ResolveOptionalEnvironment(project, Get(options, "env"));
+            if (environment == null)
+            {
+                throw new InvalidOperationException("--env is required for owner-environment generated values. Use --all-envs true to generate for every active environment.");
+            }
+
+            return new[] { environment.Id };
+        }
+
         private static VariableDefinitionModel EnsureVariable(ProjectModel project, string key, bool secret)
         {
             var variable = FindVariable(project, key);
@@ -1487,6 +1641,7 @@ namespace EnvSecured.WinForms.Cli
         private static bool Has(string[] args, string value) => args.Any(a => Same(a, value));
         private static bool Flag(Dictionary<string, string> options, string key) => options.ContainsKey(key) && (options[key] == "true" || options[key] == string.Empty);
         private static bool ParseBool(string value) => string.IsNullOrWhiteSpace(value) || value.Equals("true", StringComparison.OrdinalIgnoreCase) || value == "1" || value.Equals("yes", StringComparison.OrdinalIgnoreCase);
+        private static int ParseInt(string value, string name) { if (int.TryParse(value, out var result)) return result; throw new InvalidOperationException("--" + name + " must be an integer."); }
         private static string Required(Dictionary<string, string> options, string key) => Get(options, key) ?? throw new InvalidOperationException("Missing --" + key);
         private static string Slug(string value) => new string((value ?? string.Empty).Trim().ToLowerInvariant().Select(ch => char.IsLetterOrDigit(ch) ? ch : '-').ToArray()).Trim('-');
         private static string UniqueVariableId(ProjectModel project, string key) { var id = Slug(key); var result = id; var i = 2; while (project.Variables.Any(v => v.Id == result)) result = id + "-" + i++; return result; }
@@ -1610,6 +1765,7 @@ namespace EnvSecured.WinForms.Cli
             Console.WriteLine("  project --file <path> [--name name] [--id id] [--description text]");
             Console.WriteLine("  info|validate --file <path>");
             Console.WriteLine("  list --file <path> --what variables|values|services|envs [--show-secrets]");
+            Console.WriteLine("  get --file <path> --key KEY [--service backend|global] [--env dev|global] [--value calculated|raw] [--calculated true|false] [--format json|--json] [--show-secrets]");
             Console.WriteLine("  --register-association | --unregister-association");
             Console.WriteLine("  --check-update | --download-update");
             Console.WriteLine("    --check-update exit codes: 0 no update, 10 update available, 2 check failed");
@@ -1622,10 +1778,11 @@ namespace EnvSecured.WinForms.Cli
             Console.WriteLine("  edit-env --file <path> --env dev [--name name] [--display text] [--active true|false]");
             Console.WriteLine("  delete-env --file <path> --env dev");
             Console.WriteLine("  add-var --file <path> --key DATABASE_HOST [--secret] [--allow-shared-secret] [--allow-null] [--allow-blank]");
-            Console.WriteLine("  edit-var --file <path> --key KEY [--new-key KEY] [--update-refs true|false] [--owner-service service|global] [--move-owner-values true|false] [--secret true|false] [--allow-shared-secret true|false] [--allow-null true|false] [--allow-blank true|false] [--active true|false]");
+            Console.WriteLine("  edit-var --file <path> --key KEY [--new-key KEY] [--update-refs true|false] [--owner-service service|global] [--move-owner-values true|false] [--secret true|false] [--allow-shared-secret true|false] [--allow-null true|false] [--allow-blank true|false] [--active true|false] [--generated true|false] [--generator password|token-hex|token-base62|guid] [--generator-length 32] [--generator-scope owner-global|owner-env] [--generator-mode manual|rotate-on-sync]");
             Console.WriteLine("  delete-var --file <path> --key KEY");
             Console.WriteLine("  set --file <path> --key KEY --value VALUE [--service backend|global] [--env dev|global] [--secret]");
             Console.WriteLine("  delete-value --file <path> --key KEY [--service backend|global] [--env dev|global]");
+            Console.WriteLine("  generate --file <path> --key KEY [--env dev|--all-envs true] [--overwrite true|false]");
             Console.WriteLine("  use|unuse --file <path> --key KEY --service backend [--optional] [--visible true|false] [--override true|false] [--allow-broken-scope true]");
             Console.WriteLine("  auto-assign --file <path> [--key KEY]");
             Console.WriteLine("  compact-values --file <path>");

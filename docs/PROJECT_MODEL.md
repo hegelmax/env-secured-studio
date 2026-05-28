@@ -7,7 +7,7 @@ EnvSecured Studio stores the project vault as JSON.
 - Project: top-level vault with project metadata, settings, services, environments, variables, values, service scopes, and crypto metadata.
 - Service: application/service that consumes a scoped subset of variables.
 - Environment: deployment environment such as `dev`, `test`, or `prod`.
-- Variable: key metadata such as display name, secret flag, allow-shared-secret, allow-null, and allow-blank.
+- Variable: key metadata such as owner service, secret flag, generated value settings, allow-shared-secret, allow-null, and allow-blank.
 - Value: scoped value for a variable.
 - Service scope entry: whether a service can see, override, and export a variable.
 
@@ -55,7 +55,11 @@ A vault should contain at most one value for each `(variable, scope, service, en
 
 ## Shared Secrets
 
-Secrets defined globally or reused across environments normally produce validation warnings. Set `AllowSharedSecret` on the variable when that reuse is intentional.
+Secrets defined in the Global environment or reused across environments normally produce validation errors or warnings. Set `AllowSharedSecret` on the variable when that reuse is intentional.
+
+## Generated Values
+
+Generated variables store canonical values on their owner service. `OwnerGlobal` creates one value shared by all environments. `OwnerEnvironment` creates one value per environment. Manual generation is available from the UI and CLI; `RotateOnSync` is reserved for future external sync providers and does not rotate values during `get` or file export.
 
 ## Export Targets
 

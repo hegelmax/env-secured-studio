@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.1.1.6
+
+- Added CLI `get` for retrieving one calculated or raw effective value by key, service, and environment; plain output returns only the value, while `--format json` includes source metadata and the source value update timestamp.
+- Added value update timestamps to the Variables UI: scoped rows show a compact age, while selected-variable details show the exact UTC source timestamp.
+- Added double-click editing for variables in the main Variables grid.
+- Removed variable `DisplayName` from the UI and CLI editing flow; variable `Key` is now the single editable name used for export, interpolation, and lookup.
+- Improved Variable Card key validation so duplicate or blank keys are shown inline and block save with a visible message.
+- Fixed Variable Card owner selection so the selected owner service matches the edited variable.
+- Fixed Variable Card scope grid initialization for owner rows.
+- Changed validation so non-shared secrets defined in the Global environment are errors, including service-owned global-environment values.
+- Added generated secret metadata with `Manual` and `RotateOnSync` modes, `Password`/`TokenHex`/`TokenBase62`/`Guid` generator types, owner-global and owner-environment canonical scopes, single-value and bulk UI regeneration, and CLI `generate`.
+- Updated application versioning to `1.1.1.6`; update binary names use the public `1.1.1` release version.
+
 ## 1.1.0.5
 
 - Added optional service manifest export for files such as `.env.example`, containing variables published to each service.
@@ -26,7 +39,7 @@
 - Polished the WinForms shell with embedded toolbar/navigation icons, Quick Stats, a vault protection indicator, and a dedicated Variables page header.
 - Updated application versioning to `1.1.0.5`; update binary names still use the public `X.Y.Z` release version such as `EnvSecured_v1.1.0.exe`.
 
-## 1.0.4
+## 1.0.4.4
 
 - Reworked the About dialog into a product-style window with the application icon, version, GitHub link, copyright, description, executable path, host name, OS version, and .NET runtime.
 - Fixed update downloads so the configured timeout is actually applied during binary download.
@@ -37,7 +50,7 @@
 - Documented `--check-update` exit codes in CLI help and CLI documentation.
 - Improved CLI config parser tests so reflection failures report clear assertions instead of `NullReferenceException`.
 
-## 1.0.3
+## 1.0.3.3
 
 - Added `.envs` as the default vault file extension.
 - Added Windows file association support so `.envs` files can open with `EnvSecured.exe` on double-click.
@@ -49,7 +62,7 @@
 - Expanded unit test coverage for crypto tampering, encrypted envelope detection, effective values, validation branches, CLI config parsing, and literal brace handling.
 - Updated CLI, build, project model, and README documentation for `.envs`, update checks, and interpolation syntax.
 
-## 1.0.2
+## 1.0.2.2
 
 - Fixed encrypted vault detection so plaintext and value-encrypted vaults are not mistaken for whole-JSON encrypted envelopes.
 - Fixed saving project storage mode changes from the Project page: `Save` now applies pending `Storage` edits before writing the vault.
@@ -62,7 +75,7 @@
 - Centralized encrypted envelope detection for UI and CLI.
 - Updated build and CLI documentation for test execution and the new `save-as` command.
 
-## 1.0.1
+## 1.0.1.1
 
 - Improved output path handling: relative `OutputRootFolder` values are now resolved from the vault file location.
 - Added an output folder picker flow with absolute/relative path preview and same-drive validation.

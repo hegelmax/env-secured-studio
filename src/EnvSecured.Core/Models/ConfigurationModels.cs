@@ -52,6 +52,11 @@ namespace EnvSecured.Core.Models
         public string DemoComment { get; set; }
         public string GroupName { get; set; }
         public string OwnerServiceId { get; set; }
+        public bool IsGenerated { get; set; }
+        public string GeneratorType { get; set; }
+        public int GeneratorLength { get; set; } = 32;
+        public string GeneratorScope { get; set; }
+        public string GeneratorMode { get; set; }
         public int SortOrder { get; set; }
     }
 

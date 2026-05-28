@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Reflection;
@@ -22,6 +23,7 @@ namespace EnvSecured.WinForms.Forms
         private readonly ProjectService projectService = new ProjectService();
         private readonly VaultFileService vaultFileService = new VaultFileService();
         private readonly EffectiveConfigService effectiveConfigService = new EffectiveConfigService();
+        private readonly GeneratedValueService generatedValueService = new GeneratedValueService();
         private readonly ValidationService validationService = new ValidationService();
         private readonly RecentProjectsService recentProjectsService = new RecentProjectsService();
         private readonly CryptoService cryptoService = new CryptoService();
@@ -2005,6 +2007,7 @@ namespace EnvSecured.WinForms.Forms
             AddCommand(buttons, "Add Variable", AddVariable, "Add", 118);
             AddCommand(buttons, "Edit Variable", EditVariable, "Edit", 118);
             AddCommand(buttons, "Delete Variable", DeleteVariable, "Delete", 132);
+            AddCommand(buttons, "Regenerate Generated", RegenerateAllGeneratedVariables, "Reset", 158);
             showSecretsCheckBox = new CheckBox { Text = "Show Secrets", AutoSize = true, Padding = new Padding(12, 6, 0, 0) };
             showSecretsCheckBox.CheckedChanged += (s, e) => RefreshVariableDisplayPreservingSelection(root);
             buttons.Controls.Add(showSecretsCheckBox);
@@ -2238,12 +2241,13 @@ namespace EnvSecured.WinForms.Forms
             var selected = FindSelectedLayerValue(variable.Id);
             var effectiveValue = effective?.Value ?? selected.Value;
             var source = effective?.SourceScope.ToString() ?? selected.Source;
+            var updatedAt = effective?.SourceUpdatedAt ?? selected.UpdatedAt;
 
             info.Text = variable.Key;
             info.Controls.Add(new Label
             {
                 Dock = DockStyle.Fill,
-                Text = $"Display: {variable.DisplayName}\r\nOwner: {OwnerDisplayName(variable)}\r\nType: {variable.Type}\r\nGroup: {DisplayInfoValue(variable.GroupName)}\r\nDemo value: {DisplayInfoValue(variable.DemoValue)}\r\nDemo comment: {DisplayInfoValue(variable.DemoComment)}\r\nDescription: {DisplayInfoValue(variable.Description)}\r\nSecret: {(variable.IsSecret ? "Yes" : "No")}\r\nAllow shared secret: {(variable.AllowSharedSecret ? "Yes" : "No")}\r\nAllow null: {(variable.AllowNull ? "Yes" : "No")}\r\nAllow blank: {(variable.AllowBlank ? "Yes" : "No")}\r\nEffective: {DisplayValue(variable, effectiveValue)}\r\nSource: {source}",
+                Text = $"Owner: {OwnerDisplayName(variable)}\r\nType: {variable.Type}\r\nGroup: {DisplayInfoValue(variable.GroupName)}\r\nDemo value: {DisplayInfoValue(variable.DemoValue)}\r\nDemo comment: {DisplayInfoValue(variable.DemoComment)}\r\nDescription: {DisplayInfoValue(variable.Description)}\r\nSecret: {(variable.IsSecret ? "Yes" : "No")}\r\nAllow shared secret: {(variable.AllowSharedSecret ? "Yes" : "No")}\r\nAllow null: {(variable.AllowNull ? "Yes" : "No")}\r\nAllow blank: {(variable.AllowBlank ? "Yes" : "No")}\r\nEffective: {DisplayValue(variable, effectiveValue)}\r\nSource: {source}\r\nUpdatedAt: {FormatUpdatedAtExact(updatedAt)}",
                 Padding = new Padding(12)
             });
 
@@ -2396,14 +2400,17 @@ namespace EnvSecured.WinForms.Forms
                 SameNullable(effective.SourceEnvironmentId, environment?.Id);
             var inherited = !direct;
             var contractNote = usedByService ? string.Empty : "Not in service contract. ";
+            var updatedNote = string.IsNullOrWhiteSpace(effective.SourceUpdatedAt)
+                ? string.Empty
+                : "\r\nUpdatedAt: " + FormatUpdatedAtExact(effective.SourceUpdatedAt);
             if (direct)
             {
-                return MatrixCellState.Direct(display, color, MatrixLightColorMode(), contractNote + "Defined at " + MatrixSourceLabel(effective));
+                return MatrixCellState.Direct(display, color, MatrixLightColorMode(), contractNote + "Defined at " + MatrixSourceLabel(effective) + updatedNote);
             }
 
             if (inherited)
             {
-                return MatrixCellState.Inherited(display, color, MatrixLightColorMode(), contractNote + "Inherited from " + MatrixSourceLabel(effective));
+                return MatrixCellState.Inherited(display, color, MatrixLightColorMode(), contractNote + "Inherited from " + MatrixSourceLabel(effective) + updatedNote);
             }
 
             return MatrixCellState.Empty("-");
@@ -2461,6 +2468,16 @@ namespace EnvSecured.WinForms.Forms
             if (target != null)
             {
                 menu.Items.Add(new ToolStripSeparator());
+                if (variable?.IsGenerated == true)
+                {
+                    var generateItem = new ToolStripMenuItem("Generate / Regenerate Generated Value", null, (s, args) => GenerateVariableMatrixValue(matrix, e.RowIndex, e.ColumnIndex));
+                    if (GeneratedValueService.NormalizeScope(variable.GeneratorScope) == GeneratedValueService.ScopeOwnerEnvironment && target.EnvironmentId == null)
+                    {
+                        generateItem.Enabled = false;
+                        generateItem.ToolTipText = "Select a concrete environment column for owner-environment generated values.";
+                    }
+                    menu.Items.Add(generateItem);
+                }
                 menu.Items.Add("Delete Direct Value", null, (s, args) => DeleteVariableMatrixDirectValue(matrix, e.RowIndex, e.ColumnIndex));
             }
             menu.Show(matrix, matrix.PointToClient(Cursor.Position));
@@ -2670,11 +2687,43 @@ namespace EnvSecured.WinForms.Forms
             RefreshAfterVariableMatrixChange(matrix, target.Variable, rowIndex, columnIndex);
         }
 
+        private void GenerateVariableMatrixValue(DataGridView matrix, int rowIndex, int columnIndex)
+        {
+            var target = MatrixTargetFromCell(matrix, rowIndex, columnIndex);
+            if (target == null || !target.Variable.IsGenerated) return;
+            var environmentId = GeneratedValueService.NormalizeScope(target.Variable.GeneratorScope) == GeneratedValueService.ScopeOwnerEnvironment
+                ? target.EnvironmentId
+                : null;
+            if (GeneratedValueService.NormalizeScope(target.Variable.GeneratorScope) == GeneratedValueService.ScopeOwnerEnvironment && string.IsNullOrWhiteSpace(environmentId))
+            {
+                MessageBox.Show(this, "Select a concrete environment column for owner-environment generated values.", "Generate Value", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            var canonical = generatedValueService.BuildCanonicalTarget(target.Variable, environmentId);
+            var service = string.IsNullOrWhiteSpace(canonical.ServiceId)
+                ? "Global service"
+                : project.Services.FirstOrDefault(s => s.Id == canonical.ServiceId)?.Name ?? canonical.ServiceId;
+            var environment = string.IsNullOrWhiteSpace(canonical.EnvironmentId)
+                ? "Global environment"
+                : project.Environments.FirstOrDefault(e => e.Id == canonical.EnvironmentId)?.Name ?? canonical.EnvironmentId;
+            if (MessageBox.Show(this, $"Regenerate {target.Variable.Key} for {service} / {environment}?", "Generate Value", MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes)
+            {
+                return;
+            }
+
+            generatedValueService.Generate(project, target.Variable, environmentId, true);
+            RefreshAfterVariableMatrixChange(matrix, target.Variable, rowIndex, columnIndex);
+        }
+
         private void RefreshAfterVariableMatrixChange(DataGridView matrix, VariableDefinitionModel variable, int rowIndex, int columnIndex)
         {
+            var selectedVariableId = variable?.Id ?? SelectedId();
+            var firstDisplayedScrollingRowIndex = mainGrid?.FirstDisplayedScrollingRowIndex >= 0 ? mainGrid.FirstDisplayedScrollingRowIndex : -1;
             modified = true;
             SaveRecoveryBackupIfPossible();
             RefreshVariableGrid();
+            RestoreVariableGridSelection(selectedVariableId, firstDisplayedScrollingRowIndex);
             BuildVariableServiceEnvironmentMatrix(matrix, variable);
             RestoreVariableMatrixCell(matrix, rowIndex, columnIndex);
             RefreshStatus();
@@ -3921,7 +3970,8 @@ namespace EnvSecured.WinForms.Forms
                 { "Service", 170 },
                 { "ServiceEnvironment", 185 },
                 { "Effective", 245 },
-                { "Source", 100 }
+                { "Source", 100 },
+                { "Updated", 75 }
             };
         }
 
@@ -3946,6 +3996,7 @@ namespace EnvSecured.WinForms.Forms
             grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "ServiceEnvironment", HeaderText = "ServiceEnvironment", ReadOnly = true });
             grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Effective", HeaderText = "Calculated", ReadOnly = true });
             grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Source", HeaderText = "Source", ReadOnly = true, FillWeight = 70 });
+            grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Updated", HeaderText = "Updated", ReadOnly = true, FillWeight = 70 });
             foreach (DataGridViewColumn column in grid.Columns)
             {
                 if (column.Name != "Id")
@@ -3968,11 +4019,22 @@ namespace EnvSecured.WinForms.Forms
                 }
             };
             grid.CellMouseDown += VariableGridCellMouseDown;
+            grid.CellDoubleClick += VariableGridCellDoubleClick;
             grid.CellValueChanged += (s, e) => ApplyVariableGridChange(grid, root, e.RowIndex, e.ColumnIndex);
             grid.DataError += (s, e) => { e.ThrowException = false; };
             AttachColumnWidthPersistence(grid, "Variables");
             RestoreColumnWidths(grid, "Variables");
             return grid;
+        }
+
+        private void VariableGridCellDoubleClick(object sender, DataGridViewCellEventArgs e)
+        {
+            if (e.RowIndex < 0 || e.ColumnIndex < 0) return;
+            var grid = sender as DataGridView;
+            if (grid == null) return;
+            if (grid.Columns[e.ColumnIndex] is DataGridViewCheckBoxColumn) return;
+            SelectGridCell(grid, e.RowIndex, e.ColumnIndex);
+            EditVariable();
         }
 
         private void VariableGridCellMouseDown(object sender, DataGridViewCellMouseEventArgs e)
@@ -4028,8 +4090,10 @@ namespace EnvSecured.WinForms.Forms
                 var serviceEnvironmentValue = FindValue(v.Id, ValueScope.ServiceEnvironment, svc?.Id, env?.Id);
                 var effectiveValue = DisplayValue(v, effective?.Value ?? selected.Value);
                 var source = effective?.SourceScope.ToString() ?? selected.Source;
+                var updatedAt = effective?.SourceUpdatedAt ?? selected.UpdatedAt;
+                var updated = FormatUpdatedAtAge(updatedAt);
                 var export = exportScopeServiceId != null && IsVariableUsedByService(v.Id, exportScopeServiceId);
-                if (!PassesVariableColumnFilters(v, export, required, serviceValue, serviceEnvironmentValue, effectiveValue, source, hasScope))
+                if (!PassesVariableColumnFilters(v, export, required, serviceValue, serviceEnvironmentValue, effectiveValue, source, updated, hasScope))
                 {
                     continue;
                 }
@@ -4051,8 +4115,10 @@ namespace EnvSecured.WinForms.Forms
                     serviceValue,
                     serviceEnvironmentValue,
                     effectiveValue,
-                    source);
+                    source,
+                    updated);
                 var row = mainGrid.Rows[rowIndex];
+                row.Cells["Updated"].ToolTipText = FormatUpdatedAtExact(updatedAt);
                 ApplyValidationCellStyle(row.Cells["Validation"], v.Id, validationByVariable);
                 var exportEditable = exportScopeServiceId != null && ProjectService.IsVariableVisibleToService(project, v, exportScopeServiceId);
                 row.Cells["Export"].ReadOnly = !exportEditable;
@@ -4100,6 +4166,7 @@ namespace EnvSecured.WinForms.Forms
             SetColumnVisible("ServiceEnvironment", hasScope);
             SetColumnVisible("Effective", hasScope);
             SetColumnVisible("Source", hasScope);
+            SetColumnVisible("Updated", hasScope);
             SetColumnVisible("Required", hasScope);
         }
 
@@ -4158,6 +4225,70 @@ namespace EnvSecured.WinForms.Forms
             return string.IsNullOrWhiteSpace(value) ? "-" : value;
         }
 
+        private static string FormatUpdatedAtAge(string value)
+        {
+            if (!TryParseUpdatedAt(value, out var updatedAt))
+            {
+                return "-";
+            }
+
+            var elapsed = DateTime.UtcNow - updatedAt;
+            if (elapsed < TimeSpan.Zero)
+            {
+                elapsed = TimeSpan.Zero;
+            }
+
+            if (elapsed.TotalMinutes < 1) return "now";
+            if (elapsed.TotalHours < 1) return Math.Max(1, (int)elapsed.TotalMinutes) + "min";
+            if (elapsed.TotalDays < 1) return Math.Max(1, (int)elapsed.TotalHours) + "h";
+            if (elapsed.TotalDays < 365) return Math.Max(1, (int)elapsed.TotalDays) + "d";
+            return Math.Max(1, (int)(elapsed.TotalDays / 365)) + "y";
+        }
+
+        private static string FormatUpdatedAtExact(string value)
+        {
+            return TryParseUpdatedAt(value, out var updatedAt)
+                ? updatedAt.ToString("yyyy-MM-dd HH:mm:ss 'UTC'", CultureInfo.InvariantCulture)
+                : DisplayInfoValue(value);
+        }
+
+        private static bool TryParseUpdatedAt(string value, out DateTime updatedAt)
+        {
+            updatedAt = DateTime.MinValue;
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                return false;
+            }
+
+            if (value.StartsWith("/Date(", StringComparison.Ordinal) && value.EndsWith(")/", StringComparison.Ordinal))
+            {
+                var milliseconds = value.Substring(6, value.Length - 8);
+                var offsetIndex = milliseconds.IndexOfAny(new[] { '+', '-' }, 1);
+                if (offsetIndex > 0)
+                {
+                    milliseconds = milliseconds.Substring(0, offsetIndex);
+                }
+
+                if (long.TryParse(milliseconds, NumberStyles.Integer, CultureInfo.InvariantCulture, out var unixMilliseconds))
+                {
+                    updatedAt = new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc).AddMilliseconds(unixMilliseconds);
+                    return true;
+                }
+            }
+
+            if (DateTime.TryParse(
+                value,
+                CultureInfo.InvariantCulture,
+                DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal,
+                out var parsed))
+            {
+                updatedAt = parsed.ToUniversalTime();
+                return true;
+            }
+
+            return false;
+        }
+
         private void RestoreVariableGridSelection(string variableId, int fallbackScrollRowIndex)
         {
             if (mainGrid == null || mainGrid.Rows.Count == 0) return;
@@ -4206,6 +4337,7 @@ namespace EnvSecured.WinForms.Forms
             string serviceEnvironmentValue,
             string effectiveValue,
             string source,
+            string updated,
             bool hasScope)
         {
             return PassesTextFilter("Key", variable.Key) &&
@@ -4221,7 +4353,8 @@ namespace EnvSecured.WinForms.Forms
                     PassesTextFilter("Service", serviceValue) &&
                     PassesTextFilter("ServiceEnvironment", serviceEnvironmentValue) &&
                     PassesTextFilter("Effective", effectiveValue) &&
-                    PassesTextFilter("Source", source)));
+                    PassesTextFilter("Source", source) &&
+                    PassesTextFilter("Updated", updated)));
         }
 
         private bool PassesTextFilter(string columnName, string value)
@@ -4438,7 +4571,7 @@ namespace EnvSecured.WinForms.Forms
 
             modified = true;
             SaveRecoveryBackupIfPossible();
-            RefreshVariableDetails(root);
+            RefreshVariableDisplayPreservingSelection(root);
             RefreshStatus();
         }
 
@@ -4756,7 +4889,50 @@ namespace EnvSecured.WinForms.Forms
         {
             var variable = GetSelectedVariable();
             if (variable == null) return;
-            if (ShowVariableCard(variable, false)) Changed();
+            if (!ShowVariableCard(variable, false)) return;
+            var selectedId = variable.Id;
+            var firstDisplayedScrollingRowIndex = mainGrid?.FirstDisplayedScrollingRowIndex >= 0 ? mainGrid.FirstDisplayedScrollingRowIndex : -1;
+            modified = true;
+            SaveRecoveryBackupIfPossible();
+            RefreshVariableGrid();
+            RestoreVariableGridSelection(selectedId, firstDisplayedScrollingRowIndex);
+            RefreshVariableDetails(contentPanel.Controls.OfType<TableLayoutPanel>().FirstOrDefault());
+            RefreshStatus();
+        }
+
+        private void RegenerateAllGeneratedVariables()
+        {
+            var variables = project?.Variables?.Where(v => v.IsActive && v.IsGenerated).OrderBy(v => v.SortOrder).ThenBy(v => v.Key).ToList();
+            if (variables == null || variables.Count == 0)
+            {
+                MessageBox.Show(this, "There are no generated variables.", "Regenerate Generated", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            var targets = variables.Sum(v =>
+                GeneratedValueService.NormalizeScope(v.GeneratorScope) == GeneratedValueService.ScopeOwnerEnvironment
+                    ? project.Environments.Count(e => e.IsActive)
+                    : 1);
+            if (MessageBox.Show(this, $"Regenerate {targets} generated value(s) for {variables.Count} variable(s)?", "Regenerate Generated", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes)
+            {
+                return;
+            }
+
+            var selectedId = SelectedId();
+            var firstDisplayedScrollingRowIndex = mainGrid?.FirstDisplayedScrollingRowIndex >= 0 ? mainGrid.FirstDisplayedScrollingRowIndex : -1;
+            var count = 0;
+            foreach (var variable in variables)
+            {
+                count += GenerateVariableValues(variable, null, true);
+            }
+
+            modified = true;
+            SaveRecoveryBackupIfPossible();
+            RefreshVariableGrid();
+            RestoreVariableGridSelection(selectedId, firstDisplayedScrollingRowIndex);
+            RefreshVariableDetails(contentPanel.Controls.OfType<TableLayoutPanel>().FirstOrDefault());
+            RefreshStatus();
+            MessageBox.Show(this, $"Regenerated {count} generated value(s).", "Regenerate Generated", MessageBoxButtons.OK, MessageBoxIcon.Information);
         }
 
         private bool ShowVariableCard(VariableDefinitionModel variable, bool isNew)
@@ -4778,46 +4954,46 @@ namespace EnvSecured.WinForms.Forms
             })
             {
                 var root = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 4, Padding = new Padding(10) };
-                root.RowStyles.Add(new RowStyle(SizeType.Absolute, 300));
+                root.RowStyles.Add(new RowStyle(SizeType.Absolute, 360));
                 root.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
                 root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
                 root.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
 
-                var form = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 4, RowCount = 9 };
+                var form = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 4, RowCount = 8 };
                 form.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 120));
                 form.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
                 form.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 120));
                 form.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
-                for (var i = 0; i < 9; i++) form.RowStyles.Add(new RowStyle(SizeType.Absolute, 32));
+                for (var i = 0; i < 7; i++) form.RowStyles.Add(new RowStyle(SizeType.Absolute, 32));
+                form.RowStyles.Add(new RowStyle(SizeType.Absolute, 128));
 
                 var keyBox = AddCardTextBox(form, "Key:", 0, variable.Key, false);
                 form.SetColumnSpan(keyBox, 3);
-                var displayBox = AddCardTextBox(form, "Display name:", 1, variable.DisplayName, false);
-                form.SetColumnSpan(displayBox, 3);
+                var keyError = new ErrorProvider { ContainerControl = dialog, BlinkStyle = ErrorBlinkStyle.NeverBlink };
 
-                form.Controls.Add(new Label { Text = "Owner:", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft }, 0, 2);
+                form.Controls.Add(new Label { Text = "Owner:", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft }, 0, 1);
                 var ownerCombo = new ComboBox { Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDownList, DisplayMember = "Name" };
                 var ownerItems = project.Services.OrderBy(s => s.SortOrder).ThenBy(s => s.Name).Select(s => new ScopeSelectorItem(s.Id, s.Name)).ToList();
-                ownerCombo.DataSource = ownerItems;
-                ownerCombo.SelectedItem = ownerItems.FirstOrDefault(i => string.Equals(i.Id, variable.OwnerServiceId, StringComparison.Ordinal))
-                    ?? ownerItems.FirstOrDefault();
-                form.Controls.Add(ownerCombo, 1, 2);
+                ownerCombo.Items.AddRange(ownerItems.Cast<object>().ToArray());
+                var ownerIndex = ownerItems.FindIndex(i => string.Equals(i.Id, variable.OwnerServiceId, StringComparison.Ordinal));
+                ownerCombo.SelectedIndex = ownerIndex >= 0 ? ownerIndex : 0;
+                form.Controls.Add(ownerCombo, 1, 1);
 
-                form.Controls.Add(new Label { Text = "Type:", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft }, 2, 2);
+                form.Controls.Add(new Label { Text = "Type:", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft }, 2, 1);
                 var typeCombo = new ComboBox { Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDownList };
                 typeCombo.Items.AddRange(Enum.GetNames(typeof(VariableType)).Cast<object>().ToArray());
                 typeCombo.SelectedItem = variable.Type.ToString();
-                form.Controls.Add(typeCombo, 3, 2);
+                form.Controls.Add(typeCombo, 3, 1);
 
-                var activeBox = AddCardCheckBox(form, "Active:", 3, variable.IsActive);
-                var secretBox = AddCardCheckBox(form, "Secret:", 4, variable.IsSecret);
-                var sharedSecretBox = AddCardCheckBox(form, "Shared secret:", 5, variable.AllowSharedSecret);
-                var allowNullBox = AddCardCheckBox(form, "Allow null:", 6, variable.AllowNull);
-                var allowBlankBox = AddCardCheckBox(form, "Allow blank:", 7, variable.AllowBlank);
-                var groupBox = AddCardTextBox(form, "Group:", 3, variable.GroupName, false, 2, 3);
-                var exampleBox = AddCardTextBox(form, "Demo value:", 4, variable.DemoValue, false, 2, 3);
-                var placeholderBox = AddCardTextBox(form, "Demo comment:", 5, variable.DemoComment, false, 2, 3);
-                var descriptionBox = AddCardTextBox(form, "Description:", 6, variable.Description, false, 2, 3);
+                var activeBox = AddCardCheckBox(form, "Active:", 2, variable.IsActive);
+                var secretBox = AddCardCheckBox(form, "Secret:", 3, variable.IsSecret);
+                var sharedSecretBox = AddCardCheckBox(form, "Shared secret:", 4, variable.AllowSharedSecret);
+                var allowNullBox = AddCardCheckBox(form, "Allow null:", 5, variable.AllowNull);
+                var allowBlankBox = AddCardCheckBox(form, "Allow blank:", 6, variable.AllowBlank);
+                var groupBox = AddCardTextBox(form, "Group:", 2, variable.GroupName, false, 2, 3);
+                var exampleBox = AddCardTextBox(form, "Demo value:", 3, variable.DemoValue, false, 2, 3);
+                var placeholderBox = AddCardTextBox(form, "Demo comment:", 4, variable.DemoComment, false, 2, 3);
+                var descriptionBox = AddCardTextBox(form, "Description:", 5, variable.Description, false, 2, 3);
 
                 var summary = new Label
                 {
@@ -4825,8 +5001,96 @@ namespace EnvSecured.WinForms.Forms
                     Dock = DockStyle.Fill,
                     TextAlign = ContentAlignment.MiddleLeft
                 };
-                form.Controls.Add(new Label { Text = "Summary:", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft }, 2, 7);
-                form.Controls.Add(summary, 3, 7);
+                form.Controls.Add(new Label { Text = "Summary:", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft }, 2, 6);
+                form.Controls.Add(summary, 3, 6);
+
+                var generationGroup = new GroupBox { Text = "Generation", Dock = DockStyle.Fill };
+                var generationForm = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 4, RowCount = 3, Padding = new Padding(8, 4, 8, 4) };
+                generationForm.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 110));
+                generationForm.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+                generationForm.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 110));
+                generationForm.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+                generationForm.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
+                generationForm.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
+                generationForm.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
+                generationGroup.Controls.Add(generationForm);
+                form.Controls.Add(generationGroup, 0, 7);
+                form.SetColumnSpan(generationGroup, 4);
+
+                var generatedBox = AddCardCheckBox(generationForm, "Generated:", 0, variable.IsGenerated);
+                var generatorTypeLabel = new Label { Text = "Generator:", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft };
+                generationForm.Controls.Add(generatorTypeLabel, 2, 0);
+                var generatorTypeCombo = new ComboBox { Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDownList };
+                generatorTypeCombo.Items.AddRange(new object[] { GeneratedValueService.TypePassword, GeneratedValueService.TypeTokenHex, GeneratedValueService.TypeTokenBase62, GeneratedValueService.TypeGuid });
+                generatorTypeCombo.SelectedItem = GeneratedValueService.NormalizeType(variable.GeneratorType);
+                generationForm.Controls.Add(generatorTypeCombo, 3, 0);
+
+                var generatorLengthLabel = new Label { Text = "Length:", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft };
+                generationForm.Controls.Add(generatorLengthLabel, 0, 1);
+                var generatorLengthBox = new NumericUpDown { Dock = DockStyle.Left, Minimum = 8, Maximum = 4096, Width = 90, Value = GeneratedValueService.NormalizeLength(variable.GeneratorLength, variable.GeneratorType) };
+                generationForm.Controls.Add(generatorLengthBox, 1, 1);
+                var generatorScopeLabel = new Label { Text = "Gen scope:", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft };
+                generationForm.Controls.Add(generatorScopeLabel, 2, 1);
+                var generatorScopeCombo = new ComboBox { Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDownList };
+                generatorScopeCombo.Items.AddRange(new object[] { GeneratedValueService.ScopeOwnerGlobal, GeneratedValueService.ScopeOwnerEnvironment });
+                generatorScopeCombo.SelectedItem = GeneratedValueService.NormalizeScope(variable.GeneratorScope);
+                generationForm.Controls.Add(generatorScopeCombo, 3, 1);
+
+                var generatorModeLabel = new Label { Text = "Gen mode:", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft };
+                generationForm.Controls.Add(generatorModeLabel, 0, 2);
+                var generatorModeCombo = new ComboBox { Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDownList };
+                generatorModeCombo.Items.AddRange(new object[] { GeneratedValueService.ModeManual, GeneratedValueService.ModeRotateOnSync });
+                generatorModeCombo.SelectedItem = GeneratedValueService.NormalizeMode(variable.GeneratorMode);
+                generationForm.Controls.Add(generatorModeCombo, 1, 2);
+                var generateButton = new Button { Text = "Generate now", Width = 120, Height = 26, Enabled = !isNew };
+                generationForm.Controls.Add(generateButton, 3, 2);
+                Action updateGeneratorVisibility = () =>
+                {
+                    var visible = generatedBox.Checked;
+                    generatorTypeLabel.Visible = visible;
+                    generatorTypeCombo.Visible = visible;
+                    generatorLengthLabel.Visible = visible;
+                    generatorLengthBox.Visible = visible;
+                    generatorScopeLabel.Visible = visible;
+                    generatorScopeCombo.Visible = visible;
+                    generatorModeLabel.Visible = visible;
+                    generatorModeCombo.Visible = visible;
+                    generateButton.Visible = visible;
+                    generateButton.Enabled = visible && !isNew;
+                };
+                generatedBox.CheckedChanged += (s, e) => updateGeneratorVisibility();
+                updateGeneratorVisibility();
+
+                Action applyGeneratorFields = () =>
+                {
+                    variable.IsGenerated = generatedBox.Checked;
+                    variable.GeneratorType = GeneratedValueService.NormalizeType(Convert.ToString(generatorTypeCombo.SelectedItem));
+                    variable.GeneratorLength = GeneratedValueService.NormalizeLength((int)generatorLengthBox.Value, variable.GeneratorType);
+                    variable.GeneratorScope = GeneratedValueService.NormalizeScope(Convert.ToString(generatorScopeCombo.SelectedItem));
+                    variable.GeneratorMode = GeneratedValueService.NormalizeMode(Convert.ToString(generatorModeCombo.SelectedItem));
+                    if (variable.IsGenerated)
+                    {
+                        variable.IsSecret = true;
+                        variable.Type = VariableType.Password;
+                        secretBox.Checked = true;
+                        typeCombo.SelectedItem = VariableType.Password.ToString();
+                    }
+                };
+                generateButton.Click += (s, e) =>
+                {
+                    if (!generatedBox.Checked)
+                    {
+                        MessageBox.Show(this, "Enable Generated first.", dialog.Text, MessageBoxButtons.OK, MessageBoxIcon.Information);
+                        return;
+                    }
+
+                    applyGeneratorFields();
+                    var count = GenerateVariableValues(variable, null, true);
+                    modified = true;
+                    SaveRecoveryBackupIfPossible();
+                    summary.Text = $"Values: {project.Values.Count(v => v.VariableId == variable.Id)}    References: {CountInterpolationReferences(variable.Key)}";
+                    MessageBox.Show(this, $"Generated {count} value(s).", dialog.Text, MessageBoxButtons.OK, MessageBoxIcon.Information);
+                };
 
                 secretBox.CheckedChanged += (s, e) =>
                 {
@@ -4858,8 +5122,27 @@ namespace EnvSecured.WinForms.Forms
                 var bottom = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.RightToLeft };
                 var ok = new Button { Text = "OK", Width = 90, Height = 28, DialogResult = DialogResult.OK };
                 var cancel = new Button { Text = "Cancel", Width = 90, Height = 28, DialogResult = DialogResult.Cancel };
+                var validationMessage = new Label
+                {
+                    AutoSize = true,
+                    ForeColor = Color.Firebrick,
+                    TextAlign = ContentAlignment.MiddleLeft,
+                    Padding = new Padding(0, 7, 12, 0)
+                };
                 bottom.Controls.Add(cancel);
                 bottom.Controls.Add(ok);
+                bottom.Controls.Add(validationMessage);
+                Action validateKey = () =>
+                {
+                    var error = ValidateVariableKey(variable, keyBox.Text);
+                    keyError.SetError(keyBox, error);
+                    validationMessage.Text = error;
+                    keyBox.BackColor = string.IsNullOrEmpty(error) ? SystemColors.Window : Color.MistyRose;
+                    ok.Enabled = string.IsNullOrEmpty(error);
+                };
+                keyBox.TextChanged += (s, e) => validateKey();
+                keyBox.Leave += (s, e) => validateKey();
+                validateKey();
 
                 root.Controls.Add(form, 0, 0);
                 root.Controls.Add(scopeHeader, 0, 1);
@@ -4872,14 +5155,14 @@ namespace EnvSecured.WinForms.Forms
                 while (dialog.ShowDialog(this) == DialogResult.OK)
                 {
                     var key = keyBox.Text.Trim().ToUpperInvariant();
-                    if (string.IsNullOrWhiteSpace(key))
+                    var keyValidation = ValidateVariableKey(variable, key);
+                    if (!string.IsNullOrEmpty(keyValidation))
                     {
-                        MessageBox.Show(this, "Key is required.", dialog.Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                        continue;
-                    }
-                    if (project.Variables.Any(v => v != variable && string.Equals(v.Key, key, StringComparison.OrdinalIgnoreCase)))
-                    {
-                        MessageBox.Show(this, "Variable key already exists.", dialog.Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                        keyError.SetError(keyBox, keyValidation);
+                        validationMessage.Text = keyValidation;
+                        keyBox.BackColor = Color.MistyRose;
+                        ok.Enabled = false;
+                        keyBox.Focus();
                         continue;
                     }
 
@@ -4923,7 +5206,7 @@ namespace EnvSecured.WinForms.Forms
                     }
 
                     variable.Key = key;
-                    variable.DisplayName = DefaultIfBlank(displayBox.Text, key);
+                    variable.DisplayName = key;
                     variable.OwnerServiceId = newOwnerServiceId;
                     variable.Type = (VariableType)Enum.Parse(typeof(VariableType), Convert.ToString(typeCombo.SelectedItem));
                     variable.IsSecret = secretBox.Checked || variable.Type == VariableType.Password;
@@ -4935,12 +5218,46 @@ namespace EnvSecured.WinForms.Forms
                     variable.DemoValue = exampleBox.Text;
                     variable.DemoComment = placeholderBox.Text;
                     variable.Description = descriptionBox.Text;
+                    applyGeneratorFields();
                     ApplyVariableCardScopeGrid(scopeGrid, variable);
                     return true;
                 }
             }
 
             return false;
+        }
+
+        private string ValidateVariableKey(VariableDefinitionModel variable, string key)
+        {
+            key = (key ?? string.Empty).Trim();
+            if (string.IsNullOrWhiteSpace(key))
+            {
+                return "Key is required.";
+            }
+
+            return project.Variables.Any(v => v != variable && string.Equals(v.Key, key, StringComparison.OrdinalIgnoreCase))
+                ? "Variable key already exists."
+                : string.Empty;
+        }
+
+        private int GenerateVariableValues(VariableDefinitionModel variable, string environmentId, bool overwrite)
+        {
+            if (variable == null || !variable.IsGenerated) return 0;
+            var scope = GeneratedValueService.NormalizeScope(variable.GeneratorScope);
+            var environments = scope == GeneratedValueService.ScopeOwnerEnvironment
+                ? (string.IsNullOrWhiteSpace(environmentId)
+                    ? project.Environments.Where(e => e.IsActive).Select(e => e.Id).ToList()
+                    : new List<string> { environmentId })
+                : new List<string> { null };
+
+            var count = 0;
+            foreach (var env in environments)
+            {
+                generatedValueService.Generate(project, variable, env, overwrite);
+                count++;
+            }
+
+            return count;
         }
 
         private DataGridView BuildVariableCardScopeGrid(VariableDefinitionModel variable, string ownerServiceId)
@@ -4997,7 +5314,8 @@ namespace EnvSecured.WinForms.Forms
                 var mode = isOwner ? "---" : ScopeModeFromContract(variable.Id, service.Id);
                 if (isOwner)
                 {
-                    row.Cells["Mode"] = new DataGridViewTextBoxCell { ReadOnly = true };
+                    row.Cells["Mode"] = new DataGridViewTextBoxCell();
+                    row.Cells["Mode"].ReadOnly = true;
                 }
                 else if (!(row.Cells["Mode"] is DataGridViewComboBoxCell))
                 {
@@ -5487,8 +5805,8 @@ namespace EnvSecured.WinForms.Forms
                 v.EnvironmentId == target.EnvironmentId &&
                 v.ServiceId == target.ServiceId);
             return value == null
-                ? new LayerValue(null, "Missing")
-                : new LayerValue(value.Value, target.Scope.ToString());
+                ? new LayerValue(null, "Missing", null)
+                : new LayerValue(value.Value, target.Scope.ToString(), value.UpdatedAt);
         }
 
         private void Changed()
@@ -6097,14 +6415,16 @@ namespace EnvSecured.WinForms.Forms
 
         private sealed class LayerValue
         {
-            public LayerValue(string value, string source)
+            public LayerValue(string value, string source, string updatedAt)
             {
                 Value = value;
                 Source = source;
+                UpdatedAt = updatedAt;
             }
 
             public string Value { get; }
             public string Source { get; }
+            public string UpdatedAt { get; }
         }
 
         private sealed class MatrixCellState

@@ -31,9 +31,32 @@ EnvSecured.exe list --file C:\project\envsecured.envs --what values
 EnvSecured.exe list --file C:\project\envsecured.envs --what values --show-secrets
 EnvSecured.exe list --file C:\project\envsecured.envs --what services
 EnvSecured.exe list --file C:\project\envsecured.envs --what envs
+EnvSecured.exe get --file C:\project\envsecured.envs --key BACKEND_ALLOWED_ORIGINS --service backend --env prod
 ```
 
 `list --what values` masks secret variables by default. Use `--show-secrets` only when stdout is not captured into shared logs.
+
+`get` prints one effective value for a service/environment. By default it returns the calculated value after interpolation:
+
+```powershell
+EnvSecured.exe get --file C:\project\envsecured.envs --key BACKEND_ALLOWED_ORIGINS --service backend --env prod
+```
+
+```text
+http://localhost:5173
+```
+
+Use `--value raw` or `--calculated false` to return the selected effective value before interpolation. Secret variables are masked unless `--show-secrets` is passed.
+
+Use `--format json` or `--json` when you need metadata:
+
+```powershell
+EnvSecured.exe get --file C:\project\envsecured.envs --key BACKEND_ALLOWED_ORIGINS --service backend --env prod --format json
+```
+
+```json
+{"key":"BACKEND_ALLOWED_ORIGINS","variableId":"backend-allowed-origins","value":"http://localhost:5173","calculated":true,"service":"backend","environment":"prod","sourceScope":"ServiceEnvironment","sourceServiceId":"backend","sourceEnvironmentId":"prod","updatedAt":"2026-05-25T12:34:56.0000000Z","isSecret":false,"masked":false}
+```
 
 `save-as` copies the vault file as-is, including encrypted vaults. Add `--delete-source true` to move/rename the vault after the copy succeeds. Add `--overwrite true` only when the target file may already exist.
 
@@ -53,7 +76,9 @@ EnvSecured.exe add-var --file C:\project\envsecured.envs --key DATABASE_HOST --a
 EnvSecured.exe add-var --file C:\project\envsecured.envs --key DATABASE_PASSWORD --secret
 EnvSecured.exe add-var --file C:\project\envsecured.envs --key SHARED_TOKEN --secret --allow-shared-secret
 EnvSecured.exe edit-var --file C:\project\envsecured.envs --key DATABASE_PASSWORD --secret true --allow-shared-secret false
-EnvSecured.exe edit-var --file C:\project\envsecured.envs --key DATABASE_HOST --new-key DATABASE_SERVER --update-refs true --display "Database server" --group Database --owner-service backend --move-owner-values true --allow-null false --allow-blank false --active true
+EnvSecured.exe edit-var --file C:\project\envsecured.envs --key DATABASE_HOST --new-key DATABASE_SERVER --update-refs true --group Database --owner-service backend --move-owner-values true --allow-null false --allow-blank false --active true
+EnvSecured.exe edit-var --file C:\project\envsecured.envs --key API_TOKEN --generated true --generator token-base62 --generator-length 32 --generator-scope owner-env --generator-mode manual
+EnvSecured.exe generate --file C:\project\envsecured.envs --key API_TOKEN --env prod
 EnvSecured.exe delete-var --file C:\project\envsecured.envs --key OLD_VARIABLE
 EnvSecured.exe set --file C:\project\envsecured.envs --key DATABASE_HOST --value 127.0.0.1 --service backend --env dev
 EnvSecured.exe delete-value --file C:\project\envsecured.envs --key DATABASE_HOST --service backend --env dev
@@ -86,6 +111,8 @@ When `edit-var --new-key` renames a variable, interpolation references such as `
 When removing a variable from a service scope with `--visible false`, CLI checks whether that service still references `{{KEY}}`. If references exist, pass `--allow-broken-scope true` to confirm.
 
 `compact-values` removes duplicate value records for the same variable/scope and keeps the last record, matching runtime resolution.
+
+Generated variables are owned by EnvSecured. `--generator` accepts `password`, `token-hex`, `token-base62`, or `guid`. `--generator-scope owner-global` stores one canonical value on the owner service for all environments; `owner-env` stores one canonical value per environment. `--generator-mode manual` only changes values when `generate` or the UI context menu is used; `rotate-on-sync` is reserved for external sync providers and does not rotate on `get` or file export.
 
 ## Import
 

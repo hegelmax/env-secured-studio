@@ -8,10 +8,10 @@
     <Product>EnvSecured Studio</Product>
     <Description>Windows desktop and CLI tool for managing encrypted service and environment configuration vaults.</Description>
     <Copyright>Maxim Hegel © 2026</Copyright>
-    <Version>1.1.0.5</Version>
-    <AssemblyVersion>1.1.0.5</AssemblyVersion>
-    <FileVersion>1.1.0.5</FileVersion>
-    <InformationalVersion>1.1.0.5</InformationalVersion>
+    <Version>1.1.1.6</Version>
+    <AssemblyVersion>1.1.1.6</AssemblyVersion>
+    <FileVersion>1.1.1.6</FileVersion>
+    <InformationalVersion>1.1.1.6</InformationalVersion>
     <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
     <LangVersion>latest</LangVersion>
   </PropertyGroup>

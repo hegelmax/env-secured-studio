@@ -104,7 +104,7 @@ namespace EnvSecured.Tests
         }
 
         [Fact]
-        public void Validate_ReportsSecretGlobalForAllEnvironments()
+        public void Validate_ReportsSecretGlobalForAllEnvironmentsAsError()
         {
             var project = CreateProject();
             var variable = AddVariable(project, "secret", "SECRET");
@@ -114,7 +114,25 @@ namespace EnvSecured.Tests
 
             var results = new ValidationService().Validate(project);
 
-            Assert.Contains(results, r => r.Code == "SECRET_GLOBAL_FOR_ALL_ENVIRONMENTS" && r.Severity == ValidationSeverity.Warning);
+            Assert.Contains(results, r => r.Code == "SECRET_GLOBAL_FOR_ALL_ENVIRONMENTS" && r.Severity == ValidationSeverity.Error);
+        }
+
+        [Fact]
+        public void Validate_ReportsServiceSecretInGlobalEnvironmentAsError()
+        {
+            var project = CreateProject();
+            var variable = AddVariable(project, "secret", "SECRET");
+            variable.IsSecret = true;
+            variable.AllowSharedSecret = false;
+            variable.OwnerServiceId = "backend";
+            AddValue(project, variable.Id, ValueScope.Service, "backend", null, "shared-secret");
+
+            var results = new ValidationService().Validate(project);
+
+            Assert.Contains(results, r =>
+                r.Code == "SECRET_GLOBAL_FOR_ALL_ENVIRONMENTS" &&
+                r.Severity == ValidationSeverity.Error &&
+                r.ServiceId == "backend");
         }
 
         [Fact]
