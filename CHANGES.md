@@ -7,7 +7,6 @@
 - Added WinForms Import / Export pages for splitting the current vault into a new `.envs` file and previewing vault merge differences before applying selected rows; merge includes a mapping wizard for environments, services, and variables.
 - Improved merge mapping with explicit incoming-to-current dropdowns, automatic matching by name/display name, conflict highlighting for create-new rows, inline rename for new items, and position preservation while editing.
 - Added dedicated Split and Merge toolbar/navigation icons.
-- Updated application versioning to `1.1.2.7`; update binary names use the public `1.1.2` release version.
 
 ## 1.1.1.6
 
@@ -20,7 +19,6 @@
 - Fixed Variable Card scope grid initialization for owner rows.
 - Changed validation so non-shared secrets defined in the Global environment are errors, including service-owned global-environment values.
 - Added generated secret metadata with `Manual` and `RotateOnSync` modes, `Password`/`TokenHex`/`TokenBase62`/`Guid` generator types, owner-global and owner-environment canonical scopes, single-value and bulk UI regeneration, and CLI `generate`.
-- Updated application versioning to `1.1.1.6`; update binary names use the public `1.1.1` release version.
 
 ## 1.1.0.5
 
@@ -46,7 +44,6 @@
 - Fixed variable matrix direct/inherited styling for values inherited from other services.
 - Reduced Export target matrix flicker when using Select All or Select None.
 - Polished the WinForms shell with embedded toolbar/navigation icons, Quick Stats, a vault protection indicator, and a dedicated Variables page header.
-- Updated application versioning to `1.1.0.5`; update binary names still use the public `X.Y.Z` release version such as `EnvSecured_v1.1.0.exe`.
 
 ## 1.0.4.4
 
