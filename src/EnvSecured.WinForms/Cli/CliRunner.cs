@@ -18,6 +18,7 @@ namespace EnvSecured.WinForms.Cli
         private static readonly EffectiveConfigService EffectiveConfigService = new EffectiveConfigService();
         private static readonly ValidationService ValidationService = new ValidationService();
         private static readonly CryptoService CryptoService = new CryptoService();
+        private static readonly ProjectVaultTransformService VaultTransformService = new ProjectVaultTransformService();
 
         public static bool IsCliRequest(string[] args)
         {
@@ -45,6 +46,8 @@ namespace EnvSecured.WinForms.Cli
                 {
                     case "new": return NewProject(options);
                     case "save-as": return SaveAs(options);
+                    case "merge": return WithProjectSave(options, p => MergeVaults(p, options));
+                    case "split": return SplitVault(options);
                     case "info": return WithProject(options, p => PrintInfo(p));
                     case "validate": return WithProject(options, p => Validate(p));
                     case "list": return WithProject(options, p => List(p, options));
@@ -91,6 +94,8 @@ namespace EnvSecured.WinForms.Cli
             {
                 case "new":
                 case "save-as":
+                case "merge":
+                case "split":
                 case "info":
                 case "validate":
                 case "list":
@@ -168,6 +173,88 @@ namespace EnvSecured.WinForms.Cli
                 Console.WriteLine("Saved copy " + targetFullPath);
             }
 
+            return 0;
+        }
+
+        private static int MergeVaults(ProjectModel target, Dictionary<string, string> options)
+        {
+            var inputPaths = SplitOptionList(Required(options, "input"));
+            if (inputPaths.Count == 0) throw new InvalidOperationException("Missing --input");
+
+            var inputPasswords = SplitPasswordList(Get(options, "input-passwords"));
+            var sources = inputPaths.Select((path, index) =>
+            {
+                if (!File.Exists(path)) throw new InvalidOperationException("Input vault file does not exist: " + path);
+                var inputOptions = new Dictionary<string, string>(options, StringComparer.OrdinalIgnoreCase);
+                var inputPassword = index < inputPasswords.Count ? inputPasswords[index] : Get(options, "input-password");
+                if (!string.IsNullOrEmpty(inputPassword))
+                {
+                    inputOptions["password"] = inputPassword;
+                }
+                return LoadProject(path, inputOptions);
+            }).ToList();
+
+            var overwrite = !options.ContainsKey("overwrite") || ParseBool(options["overwrite"]);
+            var result = VaultTransformService.Merge(target, sources, overwrite);
+            Console.WriteLine("Merged " + sources.Count + " vault file(s): " +
+                result.ServicesAdded + " service(s), " +
+                result.EnvironmentsAdded + " environment(s), " +
+                result.VariablesAdded + " variable(s) added, " +
+                result.VariablesMatched + " variable(s) matched, " +
+                result.ContractsMerged + " scope row(s), " +
+                result.ValuesMerged + " value(s).");
+            return 0;
+        }
+
+        private static int SplitVault(Dictionary<string, string> options)
+        {
+            var sourcePath = Required(options, "file");
+            var targetPath = Required(options, "to");
+            if (string.Equals(Path.GetFullPath(sourcePath), Path.GetFullPath(targetPath), StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException("Source and target vault file paths are the same.");
+            }
+
+            var source = LoadProject(sourcePath, options);
+            var splitOptions = new ProjectSplitOptions
+            {
+                All = options.ContainsKey("all") && ParseBool(options["all"]),
+                Keys = SplitOptionList(Get(options, "keys") ?? Get(options, "key")),
+                OwnerServiceIds = SplitOptionList(Get(options, "owner-service") ?? Get(options, "owner")),
+                ScopeServiceIds = SplitOptionList(Get(options, "scope-service") ?? Get(options, "scope")),
+                IncludeReferences = !options.ContainsKey("include-refs") || ParseBool(options["include-refs"]),
+                ProjectName = Get(options, "name"),
+                ProjectId = Get(options, "id")
+            };
+
+            var split = VaultTransformService.Split(source, splitOptions);
+            if (options.ContainsKey("encryption"))
+            {
+                split.Settings = split.Settings ?? new ProjectSettings();
+                split.Settings.EncryptionMode = NormalizeEncryptionMode(options["encryption"]);
+            }
+
+            var saveOptions = new Dictionary<string, string>(options, StringComparer.OrdinalIgnoreCase);
+            var targetPassword = Get(options, "to-password") ?? Get(options, "new-password");
+            if (!string.IsNullOrEmpty(targetPassword))
+            {
+                saveOptions["password"] = targetPassword;
+                split.Crypto = new VaultCryptoMetadata();
+                if (split.Settings != null)
+                {
+                    split.Settings.CliExportPasswordRequiredEncrypted = null;
+                }
+            }
+
+            var targetDirectory = Path.GetDirectoryName(Path.GetFullPath(targetPath));
+            if (!string.IsNullOrWhiteSpace(targetDirectory))
+            {
+                Directory.CreateDirectory(targetDirectory);
+            }
+
+            SaveProject(split, targetPath, saveOptions);
+            VaultFileService.DeleteRecoveryBackup(targetPath);
+            Console.WriteLine("Split " + split.Variables.Count + " variable(s) into " + targetPath);
             return 0;
         }
 
@@ -1643,6 +1730,12 @@ namespace EnvSecured.WinForms.Cli
         private static bool ParseBool(string value) => string.IsNullOrWhiteSpace(value) || value.Equals("true", StringComparison.OrdinalIgnoreCase) || value == "1" || value.Equals("yes", StringComparison.OrdinalIgnoreCase);
         private static int ParseInt(string value, string name) { if (int.TryParse(value, out var result)) return result; throw new InvalidOperationException("--" + name + " must be an integer."); }
         private static string Required(Dictionary<string, string> options, string key) => Get(options, key) ?? throw new InvalidOperationException("Missing --" + key);
+        private static List<string> SplitOptionList(string value) => string.IsNullOrWhiteSpace(value)
+            ? new List<string>()
+            : value.Split(new[] { ';', ',' }, StringSplitOptions.RemoveEmptyEntries).Select(x => x.Trim()).Where(x => x.Length > 0).ToList();
+        private static List<string> SplitPasswordList(string value) => string.IsNullOrEmpty(value)
+            ? new List<string>()
+            : value.Split(new[] { ';' }, StringSplitOptions.None).ToList();
         private static string Slug(string value) => new string((value ?? string.Empty).Trim().ToLowerInvariant().Select(ch => char.IsLetterOrDigit(ch) ? ch : '-').ToArray()).Trim('-');
         private static string UniqueVariableId(ProjectModel project, string key) { var id = Slug(key); var result = id; var i = 2; while (project.Variables.Any(v => v.Id == result)) result = id + "-" + i++; return result; }
         private static string EscapeXml(string value) => System.Security.SecurityElement.Escape(value ?? string.Empty);
@@ -1762,6 +1855,8 @@ namespace EnvSecured.WinForms.Cli
             Console.WriteLine("Project commands:");
             Console.WriteLine("  new --file <path> --name <name>");
             Console.WriteLine("  save-as --file <path> --to <path> [--overwrite true] [--delete-source true]");
+            Console.WriteLine("  merge --file <target.envs> --input a.envs[;b.envs] [--overwrite true|false] [--input-password pwd|--input-passwords pwd1;pwd2]");
+            Console.WriteLine("  split --file <source.envs> --to <target.envs> [--key KEY[;KEY2]|--owner-service service|--scope-service service|--all true] [--include-refs true|false] [--to-password pwd] [--encryption open|secrets-only|all-values|whole-json]");
             Console.WriteLine("  project --file <path> [--name name] [--id id] [--description text]");
             Console.WriteLine("  info|validate --file <path>");
             Console.WriteLine("  list --file <path> --what variables|values|services|envs [--show-secrets]");

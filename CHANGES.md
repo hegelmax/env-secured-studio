@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.1.2.7
+
+- Added CLI vault `split` for exporting selected variables into a new `.envs` file, including referenced `{{KEY}}` variables by default and allowing a new target password/encryption mode.
+- Added CLI vault `merge` for combining several `.envs` files into one target vault while matching variables by key and replacing duplicate scoped values.
+- Added WinForms Import / Export pages for splitting the current vault into a new `.envs` file and previewing vault merge differences before applying selected rows; merge includes a mapping wizard for environments, services, and variables.
+- Improved merge mapping with explicit incoming-to-current dropdowns, automatic matching by name/display name, conflict highlighting for create-new rows, inline rename for new items, and position preservation while editing.
+- Added dedicated Split and Merge toolbar/navigation icons.
+- Updated application versioning to `1.1.2.7`; update binary names use the public `1.1.2` release version.
+
 ## 1.1.1.6
 
 - Added CLI `get` for retrieving one calculated or raw effective value by key, service, and environment; plain output returns only the value, while `--format json` includes source metadata and the source value update timestamp.

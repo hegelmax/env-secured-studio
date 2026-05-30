@@ -23,6 +23,8 @@ EnvSecured.exe --download-update
 EnvSecured.exe new --file C:\project\envsecured.envs --name MyProject
 EnvSecured.exe save-as --file C:\project\envsecured.envs --to C:\project\renamed.envs
 EnvSecured.exe save-as --file C:\project\envsecured.envs --to C:\project\renamed.envs --delete-source true
+EnvSecured.exe split --file C:\project\envsecured.envs --to C:\project\backend.envs --owner-service backend --to-password "new password" --encryption whole-json
+EnvSecured.exe merge --file C:\project\envsecured.envs --input "C:\project\backend.envs;C:\project\frontend.envs" --input-password "source password"
 EnvSecured.exe project --file C:\project\envsecured.envs --name MyProject --description "Shared config vault"
 EnvSecured.exe info --file C:\project\envsecured.envs
 EnvSecured.exe validate --file C:\project\envsecured.envs
@@ -59,6 +61,12 @@ EnvSecured.exe get --file C:\project\envsecured.envs --key BACKEND_ALLOWED_ORIGI
 ```
 
 `save-as` copies the vault file as-is, including encrypted vaults. Add `--delete-source true` to move/rename the vault after the copy succeeds. Add `--overwrite true` only when the target file may already exist.
+
+`split` creates a new vault file from part of an existing vault. Select variables with `--key KEY[;KEY2]`, `--owner-service service`, `--scope-service service`, or `--all true`. References used as `{{KEY}}` are included by default so interpolated values keep working; pass `--include-refs false` only when you intentionally want a hard split. Use `--to-password` to protect the new file with a different password and `--encryption open|secrets-only|all-values|whole-json` to choose the target storage mode.
+
+`merge` loads one or more vault files and merges them into `--file`. Services/environments are matched by id or name, variables are matched by key, scope rows and values are copied into the target, and matching scoped values are replaced by default. Pass `--overwrite false` to keep existing target values. If input vaults use a different password than the target vault, pass `--input-password` for all input files or `--input-passwords pwd1;pwd2` for per-file passwords.
+
+The same vault split/merge workflows are available in the WinForms UI as separate **Import / Export -> Split** and **Import / Export -> Merge** pages. The Merge page opens external vaults into a mapping wizard first: map environments, services, and variables with incoming-to-current dropdowns such as `jobs` -> `prefect-worker`, then review current and incoming values before applying selected rows.
 
 ## Editing
 

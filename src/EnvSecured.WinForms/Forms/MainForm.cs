@@ -24,6 +24,7 @@ namespace EnvSecured.WinForms.Forms
         private readonly VaultFileService vaultFileService = new VaultFileService();
         private readonly EffectiveConfigService effectiveConfigService = new EffectiveConfigService();
         private readonly GeneratedValueService generatedValueService = new GeneratedValueService();
+        private readonly ProjectVaultTransformService vaultTransformService = new ProjectVaultTransformService();
         private readonly ValidationService validationService = new ValidationService();
         private readonly RecentProjectsService recentProjectsService = new RecentProjectsService();
         private readonly CryptoService cryptoService = new CryptoService();
@@ -66,11 +67,13 @@ namespace EnvSecured.WinForms.Forms
         private DataGridView scopeMatrix;
         private DataGridView importFilesGrid;
         private DataGridView importPreviewGrid;
+        private DataGridView mergePreviewGrid;
         private Button removeImportFilesButton;
         private Button setImportEnvironmentButton;
         private Button setImportServiceButton;
         private readonly List<ImportFileRow> importFiles = new List<ImportFileRow>();
         private readonly List<ImportPreviewRow> importPreviewRows = new List<ImportPreviewRow>();
+        private readonly List<MergePreviewRow> mergePreviewRows = new List<MergePreviewRow>();
         private const string AddNewOption = "<Add new...>";
         private const string GlobalOption = "Global";
         private const string AllServicesOption = "All services";
@@ -426,6 +429,8 @@ namespace EnvSecured.WinForms.Forms
             AddIconResource("Validate", "validate.ico");
             AddIconResource("Export", "export.ico");
             AddIconResource("Import", "import.ico");
+            AddIconResource("Merge", "merge.ico");
+            AddIconResource("Split", "split.ico");
             AddIconResource("ImportExport", "imp-exp.ico");
             AddIconResource("Reset", "reset_view.ico");
             AddIconResource("Apply", "apply.ico");
@@ -740,6 +745,8 @@ namespace EnvSecured.WinForms.Forms
             AddNavigationNode(config, "Scope", "Scope", "Scope");
             var io = AddNavigationGroup("Import / Export", "ImportExport");
             AddNavigationNode(io, "Import", "Import", "Import");
+            AddNavigationNode(io, "Merge", "Merge", "Merge");
+            AddNavigationNode(io, "Split", "Split", "Split");
             AddNavigationNode(io, "Export", "Export", "Export");
             var validationGroup = AddNavigationGroup("Validation", "Validation");
             AddNavigationNode(validationGroup, "Validation Results", "Validation Results", "Validation");
@@ -774,6 +781,8 @@ namespace EnvSecured.WinForms.Forms
             else if (currentView == "Environments") RenderEnvironmentsView();
             else if (currentView == "Scope" || currentView == "Contracts") RenderScopeView();
             else if (currentView == "Import") RenderImportView();
+            else if (currentView == "Merge") RenderMergeVaultView();
+            else if (currentView == "Split") RenderSplitVaultView();
             else if (currentView == "Export") RenderExportView();
             else if (currentView == "Project") RenderProjectView();
             else if (currentView == "Validation Results") RenderValidationView();
@@ -3030,6 +3039,141 @@ namespace EnvSecured.WinForms.Forms
             };
         }
 
+        private void RenderMergeVaultView()
+        {
+            var root = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 3, ColumnCount = 1, Padding = new Padding(8) };
+            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
+            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
+            root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+
+            root.Controls.Add(BuildPageHeader("Merge Vaults", "Compare external .envs vault files with the current project and choose what to import."), 0, 0);
+
+            var commands = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false };
+            AddCommand(commands, "Open Vaults", MergeVaultFilesFromUi, "Merge", 120);
+            AddCommand(commands, "Select All", () => SetMergePreviewIncluded(true), "SelectAll", 108);
+            AddCommand(commands, "Select None", () => SetMergePreviewIncluded(false), "SelectNone", 116);
+            AddCommand(commands, "Apply Merge", ApplyMergePreview, "Apply", 124);
+            root.Controls.Add(commands, 0, 1);
+
+            var preview = mergePreviewRows.Count == 0
+                ? BuildEmptyImportPanel("No merge preview. Click Open Vaults.")
+                : BuildMergePreviewGrid();
+            root.Controls.Add(preview, 0, 2);
+            contentPanel.Controls.Add(root);
+        }
+
+        private void RenderSplitVaultView()
+        {
+            var root = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 4, ColumnCount = 1, Padding = new Padding(8) };
+            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
+            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 184));
+            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
+            root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+
+            var header = BuildPageHeader("Split Vault", "Export selected variables from the current project into a separate .envs vault file with its own password.");
+            root.Controls.Add(header, 0, 0);
+
+            var form = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 3, RowCount = 6 };
+            form.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 130));
+            form.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            form.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 110));
+            for (var i = 0; i < 6; i++) form.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
+
+            form.Controls.Add(BuildFieldLabel("Target file:"), 0, 0);
+            form.Controls.Add(new TextBox { Name = "SplitTargetBox", Dock = DockStyle.Fill }, 1, 0);
+            AddCommandCell(form, "Browse...", BrowseSplitTargetFile, "Open", 2, 0);
+
+            form.Controls.Add(BuildFieldLabel("Project name:"), 0, 1);
+            form.Controls.Add(new TextBox { Name = "SplitProjectNameBox", Dock = DockStyle.Fill, Text = (project.ProjectName ?? "project") + "-split" }, 1, 1);
+
+            form.Controls.Add(BuildFieldLabel("Selection:"), 0, 2);
+            var modeCombo = new ComboBox { Name = "SplitModeCombo", Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDownList };
+            modeCombo.Items.AddRange(new object[] { "Selected variables", "Owner service", "Scope service", "All variables" });
+            modeCombo.SelectedIndex = 0;
+            modeCombo.SelectedIndexChanged += (s, e) => UpdateSplitViewState();
+            form.Controls.Add(modeCombo, 1, 2);
+
+            form.Controls.Add(BuildFieldLabel("Service:"), 0, 3);
+            var serviceCombo = new ComboBox { Name = "SplitServiceCombo", Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDownList };
+            foreach (var service in project.Services.OrderBy(s => s.SortOrder).ThenBy(s => s.Name))
+            {
+                serviceCombo.Items.Add(new ScopeSelectorItem(service.Id, service.Name));
+            }
+            if (serviceCombo.Items.Count > 0) serviceCombo.SelectedIndex = 0;
+            form.Controls.Add(serviceCombo, 1, 3);
+
+            form.Controls.Add(BuildFieldLabel("Storage:"), 0, 4);
+            var encryptionCombo = new ComboBox { Name = "SplitEncryptionCombo", Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDownList };
+            encryptionCombo.Items.AddRange(new object[] { EncryptionOpen, EncryptionSecrets, EncryptionAllValues, EncryptionWholeJson });
+            encryptionCombo.SelectedItem = EncryptionWholeJson;
+            encryptionCombo.SelectedIndexChanged += (s, e) => UpdateSplitViewState();
+            form.Controls.Add(encryptionCombo, 1, 4);
+
+            form.Controls.Add(BuildFieldLabel("New password:"), 0, 5);
+            form.Controls.Add(new TextBox { Name = "SplitPasswordBox", Dock = DockStyle.Fill, UseSystemPasswordChar = true }, 1, 5);
+            form.Controls.Add(new CheckBox { Name = "SplitIncludeRefsBox", Text = "Include references", Checked = true, Dock = DockStyle.Fill }, 2, 5);
+            root.Controls.Add(form, 0, 1);
+
+            var commands = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false };
+            AddCommand(commands, "Create Split Vault", SplitVaultFileFromUi, "Split", 150);
+            root.Controls.Add(commands, 0, 2);
+
+            var variables = new CheckedListBox { Name = "SplitVariablesList", Dock = DockStyle.Fill, CheckOnClick = true };
+            foreach (var variable in project.Variables.OrderBy(v => v.SortOrder).ThenBy(v => v.Key))
+            {
+                variables.Items.Add(variable.Key, false);
+            }
+            root.Controls.Add(variables, 0, 3);
+            contentPanel.Controls.Add(root);
+            UpdateSplitViewState();
+        }
+
+        private void RenderVaultActionView(string title, string description, string buttonText, string imageKey, Action action)
+        {
+            var root = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 2, ColumnCount = 1, Padding = new Padding(8) };
+            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
+            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 72));
+
+            var commands = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false };
+            AddCommand(commands, buttonText, action, imageKey, 150);
+
+            root.Controls.Add(BuildPageHeader(title, description), 0, 0);
+            root.Controls.Add(commands, 0, 1);
+            contentPanel.Controls.Add(root);
+        }
+
+        private FlowLayoutPanel BuildPageHeader(string title, string description)
+        {
+            var header = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false };
+            header.Controls.Add(new Label
+            {
+                Text = title,
+                AutoSize = true,
+                Font = new Font(Font.FontFamily, 16, FontStyle.Bold),
+                Padding = new Padding(0, 4, 12, 0)
+            });
+            header.Controls.Add(new Label
+            {
+                Text = description,
+                AutoSize = true,
+                ForeColor = Color.FromArgb(80, 90, 105),
+                Padding = new Padding(0, 10, 0, 0)
+            });
+            return header;
+        }
+
+        private static Label BuildFieldLabel(string text)
+        {
+            return new Label { Text = text, Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft };
+        }
+
+        private void AddCommandCell(TableLayoutPanel table, string text, Action action, string imageKey, int column, int row)
+        {
+            var panel = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false, Margin = new Padding(4, 0, 0, 0) };
+            AddCommand(panel, text, action, imageKey, 100);
+            table.Controls.Add(panel, column, row);
+        }
+
         private DataGridView BuildImportFilesGrid()
         {
             importFilesGrid = BuildEditableGrid();
@@ -3058,6 +3202,35 @@ namespace EnvSecured.WinForms.Forms
             AttachColumnWidthPersistence(importFilesGrid, "ImportFiles");
             RestoreColumnWidths(importFilesGrid, "ImportFiles");
             return importFilesGrid;
+        }
+
+        private DataGridView BuildMergePreviewGrid()
+        {
+            mergePreviewGrid = BuildEditableGrid();
+            mergePreviewGrid.Columns.Add(new DataGridViewCheckBoxColumn { Name = "Include", HeaderText = "Include", FillWeight = 45 });
+            mergePreviewGrid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Action", HeaderText = "Action", ReadOnly = true, FillWeight = 80 });
+            mergePreviewGrid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Key", HeaderText = "Key", ReadOnly = true, FillWeight = 150 });
+            mergePreviewGrid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Scope", HeaderText = "Scope", ReadOnly = true, FillWeight = 90 });
+            mergePreviewGrid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Service", HeaderText = "Service", ReadOnly = true, FillWeight = 90 });
+            mergePreviewGrid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Environment", HeaderText = "Environment", ReadOnly = true, FillWeight = 90 });
+            mergePreviewGrid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Current", HeaderText = "Current", ReadOnly = true, FillWeight = 160 });
+            mergePreviewGrid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Incoming", HeaderText = "Incoming", ReadOnly = true, FillWeight = 160 });
+            mergePreviewGrid.Columns.Add(new DataGridViewTextBoxColumn { Name = "File", HeaderText = "File", ReadOnly = true, FillWeight = 160 });
+            mergePreviewGrid.CurrentCellDirtyStateChanged += (s, e) =>
+            {
+                if (mergePreviewGrid.IsCurrentCellDirty)
+                {
+                    mergePreviewGrid.CommitEdit(DataGridViewDataErrorContexts.Commit);
+                }
+            };
+            mergePreviewGrid.CellValueChanged += (s, e) => SyncMergePreviewFromGrid();
+            foreach (var row in mergePreviewRows)
+            {
+                mergePreviewGrid.Rows.Add(row.Include, row.Action, row.Key, row.Scope, row.Service, row.Environment, row.CurrentValue, row.IncomingValue, row.FilePath);
+            }
+            AttachColumnWidthPersistence(mergePreviewGrid, "MergePreview");
+            RestoreColumnWidths(mergePreviewGrid, "MergePreview");
+            return mergePreviewGrid;
         }
 
         private DataGridView BuildImportPreviewGrid()
@@ -3268,6 +3441,353 @@ namespace EnvSecured.WinForms.Forms
             }
             BuildImportPreviewRows();
             RenderCurrentView();
+        }
+
+        private void MergeVaultFilesFromUi()
+        {
+            using (var dialog = new OpenFileDialog
+            {
+                Filter = "EnvSecured Studio vault (*.envs)|*.envs|All files (*.*)|*.*",
+                Multiselect = true
+            })
+            {
+                if (dialog.ShowDialog(this) != DialogResult.OK) return;
+
+                var loaded = new List<MergeVaultSource>();
+                mergePreviewRows.Clear();
+                for (var i = 0; i < dialog.FileNames.Length; i++)
+                {
+                    var path = dialog.FileNames[i];
+                    try
+                    {
+                        var source = LoadVaultFileWithIsolatedKey(path);
+                        if (source == null) return;
+                        loaded.Add(new MergeVaultSource
+                        {
+                            Index = i,
+                            Path = path,
+                            Label = Path.GetFileName(path),
+                            Project = source
+                        });
+                    }
+                    catch (Exception ex)
+                    {
+                        MessageBox.Show(this, "Could not open vault file.\r\n\r\n" + path + "\r\n\r\n" + ex.Message, "Merge Vaults", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                        return;
+                    }
+                }
+
+                using (var wizard = new MergeVaultWizardForm(project, loaded))
+                {
+                    if (wizard.ShowDialog(this) != DialogResult.OK) return;
+                    var mappedSources = wizard.BuildMappedSources();
+                    for (var i = 0; i < mappedSources.Count; i++)
+                    {
+                        AddMergePreviewRows(mappedSources[i], loaded[i].Path);
+                    }
+                }
+
+                RenderCurrentView();
+                if (mergePreviewRows.Count == 0)
+                {
+                    MessageBox.Show(this, "No differences found.", "Merge Vaults", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                }
+            }
+        }
+
+        private void AddMergePreviewRows(ProjectModel source, string path)
+        {
+            ProjectService.EnsureProjectCollections(source);
+            foreach (var sourceVariable in source.Variables.OrderBy(v => v.SortOrder).ThenBy(v => v.Key))
+            {
+                var targetVariable = project.Variables.FirstOrDefault(v => string.Equals(v.Key, sourceVariable.Key, StringComparison.OrdinalIgnoreCase));
+                var values = source.Values.Where(v => v.VariableId == sourceVariable.Id).ToList();
+                if (targetVariable == null && values.Count == 0)
+                {
+                    mergePreviewRows.Add(new MergePreviewRow
+                    {
+                        Include = true,
+                        Action = "Add variable",
+                        Key = sourceVariable.Key,
+                        CurrentValue = "-",
+                        IncomingValue = OwnerDisplayName(source, sourceVariable),
+                        FilePath = path,
+                        SourceProject = source,
+                        SourceVariableId = sourceVariable.Id
+                    });
+                    continue;
+                }
+
+                foreach (var sourceValue in values)
+                {
+                    var mappedService = FindMatchingService(project, source, sourceValue.ServiceId);
+                    var mappedEnvironment = FindMatchingEnvironment(project, source, sourceValue.EnvironmentId);
+                    var targetValue = targetVariable == null
+                        ? null
+                        : project.Values.LastOrDefault(v =>
+                            v.VariableId == targetVariable.Id &&
+                            v.Scope == sourceValue.Scope &&
+                            SameNullable(v.ServiceId, mappedService?.Id) &&
+                            SameNullable(v.EnvironmentId, mappedEnvironment?.Id));
+                    if (targetVariable != null && targetValue != null && string.Equals(targetValue.Value ?? string.Empty, sourceValue.Value ?? string.Empty, StringComparison.Ordinal))
+                    {
+                        continue;
+                    }
+
+                    mergePreviewRows.Add(new MergePreviewRow
+                    {
+                        Include = true,
+                        Action = targetVariable == null ? "Add variable value" : targetValue == null ? "Add value" : "Update value",
+                        Key = sourceVariable.Key,
+                        Scope = sourceValue.Scope.ToString(),
+                        Service = ServiceName(source, sourceValue.ServiceId),
+                        Environment = EnvironmentName(source, sourceValue.EnvironmentId),
+                        CurrentValue = targetValue?.Value ?? "-",
+                        IncomingValue = sourceValue.Value ?? string.Empty,
+                        FilePath = path,
+                        SourceProject = source,
+                        SourceVariableId = sourceVariable.Id,
+                        SourceValueId = sourceValue.Id
+                    });
+                }
+            }
+        }
+
+        private static ServiceModel FindMatchingService(ProjectModel target, ProjectModel source, string sourceServiceId)
+        {
+            if (string.IsNullOrWhiteSpace(sourceServiceId)) return null;
+            var sourceService = source.Services.FirstOrDefault(s => string.Equals(s.Id, sourceServiceId, StringComparison.Ordinal));
+            return target.Services.FirstOrDefault(s =>
+                string.Equals(s.Id, sourceServiceId, StringComparison.OrdinalIgnoreCase) ||
+                (sourceService != null && string.Equals(s.Name, sourceService.Name, StringComparison.OrdinalIgnoreCase)));
+        }
+
+        private static EnvironmentModel FindMatchingEnvironment(ProjectModel target, ProjectModel source, string sourceEnvironmentId)
+        {
+            if (string.IsNullOrWhiteSpace(sourceEnvironmentId)) return null;
+            var sourceEnvironment = source.Environments.FirstOrDefault(e => string.Equals(e.Id, sourceEnvironmentId, StringComparison.Ordinal));
+            return target.Environments.FirstOrDefault(e =>
+                string.Equals(e.Id, sourceEnvironmentId, StringComparison.OrdinalIgnoreCase) ||
+                (sourceEnvironment != null && string.Equals(e.Name, sourceEnvironment.Name, StringComparison.OrdinalIgnoreCase)));
+        }
+
+        private static string OwnerDisplayName(ProjectModel source, VariableDefinitionModel variable)
+        {
+            if (variable == null || string.IsNullOrWhiteSpace(variable.OwnerServiceId)) return "(none)";
+            return source.Services.FirstOrDefault(s => s.Id == variable.OwnerServiceId)?.Name ?? variable.OwnerServiceId;
+        }
+
+        private static string ServiceName(ProjectModel source, string serviceId)
+        {
+            if (string.IsNullOrWhiteSpace(serviceId)) return string.Empty;
+            return source.Services.FirstOrDefault(s => s.Id == serviceId)?.Name ?? serviceId;
+        }
+
+        private static string EnvironmentName(ProjectModel source, string environmentId)
+        {
+            if (string.IsNullOrWhiteSpace(environmentId)) return string.Empty;
+            return source.Environments.FirstOrDefault(e => e.Id == environmentId)?.Name ?? environmentId;
+        }
+
+        private void SyncMergePreviewFromGrid()
+        {
+            if (mergePreviewGrid == null) return;
+            mergePreviewGrid.EndEdit();
+            for (var i = 0; i < mergePreviewGrid.Rows.Count && i < mergePreviewRows.Count; i++)
+            {
+                mergePreviewRows[i].Include = Convert.ToBoolean(mergePreviewGrid.Rows[i].Cells["Include"].Value ?? false);
+            }
+        }
+
+        private void SetMergePreviewIncluded(bool included)
+        {
+            SyncMergePreviewFromGrid();
+            foreach (var row in mergePreviewRows)
+            {
+                row.Include = included;
+            }
+            RenderCurrentView();
+        }
+
+        private void ApplyMergePreview()
+        {
+            SyncMergePreviewFromGrid();
+            var selected = mergePreviewRows.Where(r => r.Include).ToList();
+            if (selected.Count == 0)
+            {
+                MessageBox.Show(this, "No merge rows selected.", "Merge Vaults", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            var sources = new List<ProjectModel>();
+            foreach (var group in selected.GroupBy(r => r.SourceProject))
+            {
+                var temp = CloneProject(group.Key);
+                var variableIds = new HashSet<string>(group.Select(r => r.SourceVariableId).Where(id => !string.IsNullOrWhiteSpace(id)));
+                var valueIds = new HashSet<string>(group.Select(r => r.SourceValueId).Where(id => !string.IsNullOrWhiteSpace(id)));
+                temp.Variables = temp.Variables.Where(v => variableIds.Contains(v.Id)).ToList();
+                temp.Contracts = temp.Contracts.Where(c => variableIds.Contains(c.VariableId)).ToList();
+                temp.Values = temp.Values.Where(v => valueIds.Contains(v.Id)).ToList();
+                sources.Add(temp);
+            }
+
+            var result = vaultTransformService.Merge(project, sources, true);
+            modified = true;
+            SaveRecoveryBackupIfPossible();
+            mergePreviewRows.Clear();
+            RenderCurrentView();
+            MessageBox.Show(this,
+                "Merged selected rows." + Environment.NewLine +
+                "Variables added: " + result.VariablesAdded + Environment.NewLine +
+                "Variables matched: " + result.VariablesMatched + Environment.NewLine +
+                "Values merged: " + result.ValuesMerged,
+                "Merge Vaults",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Information);
+        }
+
+        private void SplitVaultFileFromUi()
+        {
+            var targetBox = contentPanel.Controls.Find("SplitTargetBox", true).FirstOrDefault() as TextBox;
+            var nameBox = contentPanel.Controls.Find("SplitProjectNameBox", true).FirstOrDefault() as TextBox;
+            var modeCombo = contentPanel.Controls.Find("SplitModeCombo", true).FirstOrDefault() as ComboBox;
+            var serviceCombo = contentPanel.Controls.Find("SplitServiceCombo", true).FirstOrDefault() as ComboBox;
+            var encryptionCombo = contentPanel.Controls.Find("SplitEncryptionCombo", true).FirstOrDefault() as ComboBox;
+            var passwordBox = contentPanel.Controls.Find("SplitPasswordBox", true).FirstOrDefault() as TextBox;
+            var includeRefsBox = contentPanel.Controls.Find("SplitIncludeRefsBox", true).FirstOrDefault() as CheckBox;
+            var variablesList = contentPanel.Controls.Find("SplitVariablesList", true).FirstOrDefault() as CheckedListBox;
+
+            var targetPath = targetBox?.Text?.Trim();
+            var encryptionMode = SplitEncryptionMode(encryptionCombo);
+            if (string.IsNullOrWhiteSpace(targetPath))
+            {
+                MessageBox.Show(this, "Target file is required.", "Split Vault", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+            if (!string.Equals(encryptionMode, "Open", StringComparison.OrdinalIgnoreCase) && string.IsNullOrEmpty(passwordBox?.Text))
+            {
+                MessageBox.Show(this, "New password is required for encrypted vault files.", "Split Vault", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+            if (File.Exists(targetPath) &&
+                MessageBox.Show(this, "Target file exists. Replace it?", "Split Vault", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes)
+            {
+                return;
+            }
+
+            var mode = modeCombo?.SelectedIndex ?? 0;
+            var serviceId = (serviceCombo?.SelectedItem as ScopeSelectorItem)?.Id;
+            var options = new ProjectSplitOptions
+            {
+                All = mode == 3,
+                IncludeReferences = includeRefsBox?.Checked == true,
+                ProjectName = nameBox?.Text?.Trim()
+            };
+            if (mode == 0)
+            {
+                options.Keys.AddRange(variablesList?.CheckedItems.Cast<string>() ?? Enumerable.Empty<string>());
+                if (options.Keys.Count == 0)
+                {
+                    MessageBox.Show(this, "Select at least one variable.", "Split Vault", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
+            }
+            else if (mode == 1)
+            {
+                if (string.IsNullOrWhiteSpace(serviceId))
+                {
+                    MessageBox.Show(this, "Service is required.", "Split Vault", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
+                options.OwnerServiceIds.Add(serviceId);
+            }
+            else if (mode == 2)
+            {
+                if (string.IsNullOrWhiteSpace(serviceId))
+                {
+                    MessageBox.Show(this, "Service is required.", "Split Vault", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
+                options.ScopeServiceIds.Add(serviceId);
+            }
+
+            ProjectModel split;
+            try
+            {
+                split = vaultTransformService.Split(project, options);
+                split.Settings = split.Settings ?? new ProjectSettings();
+                split.Settings.EncryptionMode = encryptionMode;
+                split.Settings.EncryptAllValues = string.Equals(encryptionMode, "AllValues", StringComparison.OrdinalIgnoreCase);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(this, ex.Message, "Split Vault", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            if (!SaveSplitVaultFile(split, targetPath, passwordBox?.Text))
+            {
+                return;
+            }
+
+            MessageBox.Show(this, "Split " + split.Variables.Count + " variable(s) into:" + Environment.NewLine + targetPath, "Split Vault", MessageBoxButtons.OK, MessageBoxIcon.Information);
+        }
+
+        private void BrowseSplitTargetFile()
+        {
+            var targetBox = contentPanel.Controls.Find("SplitTargetBox", true).FirstOrDefault() as TextBox;
+            using (var dialog = new SaveFileDialog
+            {
+                Filter = "EnvSecured Studio vault (*.envs)|*.envs|All files (*.*)|*.*",
+                FileName = "split.envs",
+                DefaultExt = "envs",
+                AddExtension = true
+            })
+            {
+                if (dialog.ShowDialog(this) == DialogResult.OK && targetBox != null)
+                {
+                    targetBox.Text = dialog.FileName;
+                }
+            }
+        }
+
+        private void UpdateSplitViewState()
+        {
+            var modeCombo = contentPanel.Controls.Find("SplitModeCombo", true).FirstOrDefault() as ComboBox;
+            var serviceCombo = contentPanel.Controls.Find("SplitServiceCombo", true).FirstOrDefault() as ComboBox;
+            var encryptionCombo = contentPanel.Controls.Find("SplitEncryptionCombo", true).FirstOrDefault() as ComboBox;
+            var passwordBox = contentPanel.Controls.Find("SplitPasswordBox", true).FirstOrDefault() as TextBox;
+            var variablesList = contentPanel.Controls.Find("SplitVariablesList", true).FirstOrDefault() as CheckedListBox;
+            var mode = modeCombo?.SelectedIndex ?? 0;
+            if (variablesList != null) variablesList.Enabled = mode == 0;
+            if (serviceCombo != null) serviceCombo.Enabled = mode == 1 || mode == 2;
+            if (passwordBox != null) passwordBox.Enabled = !string.Equals(SplitEncryptionMode(encryptionCombo), "Open", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static string SplitEncryptionMode(ComboBox comboBox)
+        {
+            var label = Convert.ToString(comboBox?.SelectedItem);
+            if (string.Equals(label, EncryptionWholeJson, StringComparison.OrdinalIgnoreCase)) return "WholeJson";
+            if (string.Equals(label, EncryptionAllValues, StringComparison.OrdinalIgnoreCase)) return "AllValues";
+            if (string.Equals(label, EncryptionSecrets, StringComparison.OrdinalIgnoreCase)) return "SecretsOnly";
+            return "Open";
+        }
+
+        private ProjectModel LoadVaultFileWithIsolatedKey(string path)
+        {
+            var previousKey = vaultKey == null ? null : (byte[])vaultKey.Clone();
+            try
+            {
+                return LoadVaultFile(path, false);
+            }
+            finally
+            {
+                ClearVaultKey();
+                if (previousKey != null)
+                {
+                    SetVaultKey(previousKey);
+                }
+            }
         }
 
         private void SyncImportFilesFromGrid()
@@ -5866,6 +6386,40 @@ namespace EnvSecured.WinForms.Forms
             return true;
         }
 
+        private bool SaveSplitVaultFile(ProjectModel splitProject, string path, string password)
+        {
+            var previousProject = project;
+            var previousKey = vaultKey == null ? null : (byte[])vaultKey.Clone();
+            try
+            {
+                project = splitProject;
+                ClearVaultKey();
+                if (!string.Equals(GetProjectEncryptionMode(splitProject), "Open", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (!CreateVaultKey(splitProject, password, password))
+                    {
+                        return false;
+                    }
+                }
+
+                var directory = Path.GetDirectoryName(Path.GetFullPath(path));
+                if (!string.IsNullOrWhiteSpace(directory))
+                {
+                    Directory.CreateDirectory(directory);
+                }
+                return SaveVaultFile(path, false);
+            }
+            finally
+            {
+                project = previousProject;
+                ClearVaultKey();
+                if (previousKey != null)
+                {
+                    SetVaultKey(previousKey);
+                }
+            }
+        }
+
         private ProjectModel LoadVaultFile(string path, bool recoveryBackup)
         {
             var actualPath = recoveryBackup ? vaultFileService.GetRecoveryBackupPath(path) : path;
@@ -6104,14 +6658,18 @@ namespace EnvSecured.WinForms.Forms
         {
             var password = PromptDialog.ShowPassword(this, "Create Vault Password", "Master password for encrypted values:");
             if (password == null) return false;
+            var confirm = PromptDialog.ShowPassword(this, "Create Vault Password", "Repeat master password:");
+            return CreateVaultKey(targetProject, password, confirm);
+        }
+
+        private bool CreateVaultKey(ProjectModel targetProject, string password, string confirm)
+        {
+            if (password == null || confirm == null) return false;
             if (password.Length == 0)
             {
                 MessageBox.Show(this, "Master password cannot be empty.", "Create Vault Password", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return false;
             }
-
-            var confirm = PromptDialog.ShowPassword(this, "Create Vault Password", "Repeat master password:");
-            if (confirm == null) return false;
             if (password != confirm)
             {
                 MessageBox.Show(this, "Passwords do not match.", "Create Vault Password", MessageBoxButtons.OK, MessageBoxIcon.Warning);
@@ -6395,6 +6953,7 @@ namespace EnvSecured.WinForms.Forms
 
             public string Id { get; }
             public string Name { get; }
+            public override string ToString() => Name;
         }
 
         private sealed class ValueTarget
@@ -6539,6 +7098,22 @@ namespace EnvSecured.WinForms.Forms
             public string OldValue { get; set; }
             public string NewValue { get; set; }
             public string FilePath { get; set; }
+        }
+
+        private sealed class MergePreviewRow
+        {
+            public bool Include { get; set; }
+            public string Action { get; set; }
+            public string Key { get; set; }
+            public string Scope { get; set; }
+            public string Service { get; set; }
+            public string Environment { get; set; }
+            public string CurrentValue { get; set; }
+            public string IncomingValue { get; set; }
+            public string FilePath { get; set; }
+            public ProjectModel SourceProject { get; set; }
+            public string SourceVariableId { get; set; }
+            public string SourceValueId { get; set; }
         }
     }
 }
