@@ -68,6 +68,16 @@ namespace EnvSecured.WinForms
             return settings.BooleanPreferences[key];
         }
 
+        public string LoadStringPreference(string key)
+        {
+            var settings = LoadSettings();
+            if (settings.StringPreferences == null || !settings.StringPreferences.ContainsKey(key))
+            {
+                return null;
+            }
+            return settings.StringPreferences[key];
+        }
+
         private Settings LoadSettings()
         {
             try
@@ -128,6 +138,21 @@ namespace EnvSecured.WinForms
             Save(settings);
         }
 
+        public void SaveStringPreference(string key, string value)
+        {
+            var settings = LoadSettings();
+            settings.StringPreferences = settings.StringPreferences ?? new Dictionary<string, string>();
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                settings.StringPreferences.Remove(key);
+            }
+            else
+            {
+                settings.StringPreferences[key] = value;
+            }
+            Save(settings);
+        }
+
         public void ResetLayoutSettings()
         {
             var settings = LoadSettings();
@@ -152,6 +177,7 @@ namespace EnvSecured.WinForms
             public Dictionary<string, Dictionary<string, int>> GridColumnWidths { get; set; } = new Dictionary<string, Dictionary<string, int>>();
             public Dictionary<string, double> SplitterRatios { get; set; } = new Dictionary<string, double>();
             public Dictionary<string, bool> BooleanPreferences { get; set; } = new Dictionary<string, bool>();
+            public Dictionary<string, string> StringPreferences { get; set; } = new Dictionary<string, string>();
         }
     }
 

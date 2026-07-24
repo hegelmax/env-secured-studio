@@ -37,6 +37,21 @@ namespace EnvSecured.Tests
             Assert.Equal("ciphertext", envelope.Payload.Ciphertext);
         }
 
+        [Fact]
+        public void TryRead_ReadsLegacyEncryptedEnvelope()
+        {
+            var serializer = new JavaScriptSerializer();
+            var json = serializer.Serialize(new EncryptedProjectFile
+            {
+                Format = EncryptedEnvelopeDetector.LegacyFormat,
+                Version = 0,
+                Payload = new EncryptedPayload { Nonce = "nonce", Ciphertext = "ciphertext", Tag = "tag" }
+            });
+
+            Assert.True(EncryptedEnvelopeDetector.TryRead(json, serializer, out var envelope));
+            Assert.Equal(EncryptedEnvelopeDetector.LegacyFormat, envelope.Format);
+        }
+
         [Theory]
         [InlineData("")]
         [InlineData("not json")]

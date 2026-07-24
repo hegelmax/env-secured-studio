@@ -58,6 +58,7 @@ namespace EnvSecured.Core.Models
         public string GeneratorScope { get; set; }
         public string GeneratorMode { get; set; }
         public int SortOrder { get; set; }
+        public IntegrityTagModel Integrity { get; set; } = new IntegrityTagModel();
     }
 
     public sealed class VariableContractModel
@@ -70,14 +71,17 @@ namespace EnvSecured.Core.Models
         public bool ShareWithOtherServices { get; set; } = true;
         public bool VisibleToService { get; set; } = true;
         public bool AllowOverride { get; set; } = true;
+        public bool? Sync { get; set; }
         public string DemoValue { get; set; }
         public string Notes { get; set; }
         public int SortOrder { get; set; }
+        public bool StoredAsServiceScope { get; set; }
     }
 
     public sealed class VariableValueModel
     {
         public string Id { get; set; }
+        public int Version { get; set; } = 1;
         public string VariableId { get; set; }
         public ValueScope Scope { get; set; }
         public string EnvironmentId { get; set; }
@@ -87,6 +91,7 @@ namespace EnvSecured.Core.Models
         public EncryptedPayload EncryptedValue { get; set; }
         public string Notes { get; set; }
         public string UpdatedAt { get; set; } = FormatUpdatedAt(DateTime.UtcNow);
+        public bool StoredInServiceScope { get; set; }
 
         [ScriptIgnore]
         public DateTime UpdatedAtUtc

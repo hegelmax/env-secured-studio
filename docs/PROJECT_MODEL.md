@@ -2,6 +2,8 @@
 
 EnvSecured Studio stores the project vault as JSON.
 
+New saves use the nested `EnvSecured.Vault` version 2 format documented in [VAULT_FORMAT_V2.md](VAULT_FORMAT_V2.md). Legacy flat `Contracts` and root `Values` are converted into each variable's explicit owner flags, `Values`, and `ServiceScopes`.
+
 ## Main Concepts
 
 - Project: top-level vault with project metadata, settings, services, environments, variables, values, service scopes, and crypto metadata.
@@ -9,7 +11,7 @@ EnvSecured Studio stores the project vault as JSON.
 - Environment: deployment environment such as `dev`, `test`, or `prod`.
 - Variable: key metadata such as owner service, secret flag, generated value settings, allow-shared-secret, allow-null, and allow-blank.
 - Value: scoped value for a variable.
-- Service scope entry: whether a service can see, override, and export a variable.
+- Service scope entry: whether a service can see, override, export, and externally synchronize a variable.
 
 ## Value Scope Priority
 
@@ -42,7 +44,7 @@ For service-owned variables, interpolation requires the referenced variable to b
 
 ## Required Values
 
-`Required` is stored on the service scope entry, not on the variable itself.
+`Required` is stored explicitly on both the owner scope and every dependent service scope.
 
 - A scoped variable with `Required = true` must have an effective value for each active service/environment pair.
 - If the value is missing and `AllowNull` is false, validation emits `REQUIRED_VALUE_MISSING`.
@@ -60,6 +62,16 @@ Secrets defined in the Global environment or reused across environments normally
 ## Generated Values
 
 Generated variables store canonical values on their owner service. `OwnerGlobal` creates one value shared by all environments. `OwnerEnvironment` creates one value per environment. Manual generation is available from the UI and CLI; `RotateOnSync` is reserved for future external sync providers and does not rotate values during `get` or file export.
+
+## Synchronization Providers
+
+External provider definitions are stored under `Sync.Providers`. The first provider type is GitHub Actions, which requires the local GitHub CLI command `gh` to be available on the computer before it can be configured in the UI.
+
+External providers include only service scopes with `Sync = true`. This is independent from file export: a variable may be synchronized without appearing in rendered files, or exported to files without being sent to an external provider.
+
+In the nested v2 file, the flags directly on a variable are the owner-service scope. Top-level `Sync` therefore controls only `OwnerServiceId`; it is not a project-wide master flag. Every `ServiceScopes[].Sync` controls that exact service independently. A provider takes the union of qualifying rows across its selected services after applying `Visible` and `Sync`. If multiple selected services resolve the same flat GitHub key to different values or types, synchronization reports a conflict and applies nothing.
+
+Provider connection settings are stored in `EncryptedSettings`, even when project values use open storage. Decrypted provider settings are runtime-only and are not serialized as plaintext.
 
 ## Export Targets
 
@@ -119,8 +131,11 @@ A service scope has independent flags:
 - `VisibleToService = true` means the variable is in that service scope.
 - `AllowOverride = true` means the scoped dependent service may override the owner value.
 - `Excluded = false` means the variable is exported for that service.
+- `Sync = true` means the variable is published by external synchronization providers for that service.
 
-The owner service is always in scope and can always override its own variable. Export is configured independently for each scoped service.
+In the v2 file these runtime compatibility fields are serialized as the direct flags `Visible`, `AllowOverride`, `Export`, `Sync`, and `Required`; `Contracts` is not written. Older files without `Sync` inherit it from `Export` during migration.
+
+The owner service is always in scope and can always override its own variable. Export and external synchronization are configured independently for each scoped service.
 
 The UI Scope Matrix exposes these combinations:
 

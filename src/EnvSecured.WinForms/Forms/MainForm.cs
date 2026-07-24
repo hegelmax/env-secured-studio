@@ -18,16 +18,18 @@ using EnvSecured.WinForms;
 
 namespace EnvSecured.WinForms.Forms
 {
-    public sealed class MainForm : Form
+    public sealed partial class MainForm : Form
     {
         private readonly ProjectService projectService = new ProjectService();
         private readonly VaultFileService vaultFileService = new VaultFileService();
         private readonly EffectiveConfigService effectiveConfigService = new EffectiveConfigService();
         private readonly GeneratedValueService generatedValueService = new GeneratedValueService();
         private readonly ProjectVaultTransformService vaultTransformService = new ProjectVaultTransformService();
+        private readonly ExternalCommandService externalCommandService = new ExternalCommandService();
         private readonly ValidationService validationService = new ValidationService();
         private readonly RecentProjectsService recentProjectsService = new RecentProjectsService();
         private readonly CryptoService cryptoService = new CryptoService();
+        private readonly VaultProtectionService vaultProtectionService = new VaultProtectionService();
         private readonly DpapiCacheService dpapiCacheService = new DpapiCacheService();
 
         private ProjectModel project;
@@ -88,6 +90,7 @@ namespace EnvSecured.WinForms.Forms
         private const string ScopeModeOverride = "Override";
         private const string ScopeModeExport = "Export";
         private const string ScopeModeFull = "Full";
+        private const string SyncProviderGitHubActions = "GitHubActions";
         private static readonly string[] ScopeModes =
         {
             ScopeModeNone,
@@ -457,6 +460,7 @@ namespace EnvSecured.WinForms.Forms
             AddIconResource("Info", "info.ico");
             AddIconResource("Warning", "warning.ico");
             AddIconResource("Validation", "report.ico");
+            AddIconResource("Sync", "scope.ico");
 
             if (uiImages.Count == 0) return;
             navigationImages = new ImageList { ColorDepth = ColorDepth.Depth32Bit, ImageSize = new Size(16, 16) };
@@ -653,13 +657,43 @@ namespace EnvSecured.WinForms.Forms
                 }
             }
 
-            project = LoadVaultFile(path, restoreBackup);
-            if (project == null)
+            ProjectModel loadedProject;
+            try
             {
-                RenderNoProjectView();
+                loadedProject = LoadVaultFile(path, restoreBackup);
+            }
+            catch (CryptographicException ex)
+            {
+                ClearVaultKey();
+                MessageBox.Show(
+                    this,
+                    "The vault could not be opened because its integrity check failed.\r\n\r\n" + ex.Message,
+                    "Vault Integrity Check",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Error);
+                if (project == null) RenderNoProjectView();
+                return;
+            }
+            catch (Exception ex)
+            {
+                ClearVaultKey();
+                MessageBox.Show(
+                    this,
+                    "The project could not be opened.\r\n\r\n" + ex.Message,
+                    "Open Project",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Error);
+                if (project == null) RenderNoProjectView();
                 return;
             }
 
+            if (loadedProject == null)
+            {
+                if (project == null) RenderNoProjectView();
+                return;
+            }
+
+            project = loadedProject;
             currentFilePath = path;
             modified = restoreBackup;
             recoveryBackupWarningShown = false;
@@ -743,11 +777,14 @@ namespace EnvSecured.WinForms.Forms
             AddNavigationNode(config, "Services", "Services", "Services");
             AddNavigationNode(config, "Environments", "Environments", "Environments");
             AddNavigationNode(config, "Scope", "Scope", "Scope");
+            AddNavigationNode(config, "Access Tokens", "Access Tokens", "Key");
             var io = AddNavigationGroup("Import / Export", "ImportExport");
             AddNavigationNode(io, "Import", "Import", "Import");
             AddNavigationNode(io, "Merge", "Merge", "Merge");
             AddNavigationNode(io, "Split", "Split", "Split");
             AddNavigationNode(io, "Export", "Export", "Export");
+            var sync = AddNavigationGroup("Synchronization", "Sync");
+            AddNavigationNode(sync, "Providers", "Sync Providers", "Sync");
             var validationGroup = AddNavigationGroup("Validation", "Validation");
             AddNavigationNode(validationGroup, "Validation Results", "Validation Results", "Validation");
             navigation.ExpandAll();
@@ -780,10 +817,12 @@ namespace EnvSecured.WinForms.Forms
             if (currentView == "Services") RenderServicesView();
             else if (currentView == "Environments") RenderEnvironmentsView();
             else if (currentView == "Scope" || currentView == "Contracts") RenderScopeView();
+            else if (currentView == "Access Tokens") RenderAccessTokensView();
             else if (currentView == "Import") RenderImportView();
             else if (currentView == "Merge") RenderMergeVaultView();
             else if (currentView == "Split") RenderSplitVaultView();
             else if (currentView == "Export") RenderExportView();
+            else if (currentView == "Sync Providers") RenderSyncProvidersView();
             else if (currentView == "Project") RenderProjectView();
             else if (currentView == "Validation Results") RenderValidationView();
             else RenderVariablesView();
@@ -984,1000 +1023,6 @@ namespace EnvSecured.WinForms.Forms
                 grid.RowStyles.Add(new RowStyle(SizeType.Absolute, 22));
             }
             return grid;
-        }
-
-        private void RenderExportView()
-        {
-            project.Settings = project.Settings ?? new ProjectSettings();
-
-            var root = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 2, ColumnCount = 1, Padding = new Padding(8) };
-            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
-            root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-
-            var buttons = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false };
-            AddCommand(buttons, "Apply", () => ApplyExportSettingsFromView(), "Apply", 96);
-            AddCommand(buttons, "Export", () =>
-            {
-                ApplyExportSettingsFromView();
-                RenderOutputFiles();
-            }, "Export", 96);
-            buttons.Controls.Add(new Label { Text = "Export Settings", AutoSize = true, Padding = new Padding(12, 7, 0, 0), Font = new Font(Font, FontStyle.Bold) });
-
-            var body = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 3, Padding = new Padding(0, 8, 16, 0) };
-            body.RowStyles.Add(new RowStyle(SizeType.Absolute, 352));
-            body.RowStyles.Add(new RowStyle(SizeType.Absolute, 36));
-            body.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-
-            var form = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 11, Margin = Padding.Empty };
-            form.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 160));
-            form.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-            for (var i = 0; i < 11; i++) form.RowStyles.Add(new RowStyle(SizeType.Absolute, 32));
-
-            form.Controls.Add(new Label { Text = "Out folder:", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft }, 0, 0);
-            var outputRootPanel = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1, Margin = Padding.Empty };
-            outputRootPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-            outputRootPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 94));
-            var outputRootBox = new TextBox { Name = "OutputRootBox", Dock = DockStyle.Fill, Text = project.Settings.OutputRootFolder ?? string.Empty };
-            var browseOutputRootButton = new Button { Text = "Browse...", Dock = DockStyle.Fill, Height = 24 };
-            browseOutputRootButton.Click += (s, e) => BrowseOutputRootFolder(outputRootBox);
-            outputRootPanel.Controls.Add(outputRootBox, 0, 0);
-            outputRootPanel.Controls.Add(browseOutputRootButton, 1, 0);
-            form.Controls.Add(outputRootPanel, 1, 0);
-            form.Controls.Add(new Label { Text = "Format:", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft }, 0, 1);
-            var formatCombo = new ComboBox { Name = "OutputFormatCombo", Dock = DockStyle.Left, Width = 140, DropDownStyle = ComboBoxStyle.DropDownList };
-            formatCombo.Items.AddRange(new object[] { "CONFIG", "TOML", "YAML", "XML", "JSON" });
-            formatCombo.SelectedItem = NormalizeOutputFormat(project.Settings.OutputFormat);
-            var extensionBox = new TextBox { Name = "OutputExtensionBox", Left = 150, Width = 120, Text = NormalizeOutputExtension(project.Settings.OutputExtension, Convert.ToString(formatCombo.SelectedItem)) };
-            formatCombo.SelectedIndexChanged += (s, e) => extensionBox.Text = DefaultOutputExtension(Convert.ToString(formatCombo.SelectedItem));
-            var formatPanel = new Panel { Dock = DockStyle.Fill };
-            formatPanel.Controls.Add(formatCombo);
-            formatPanel.Controls.Add(new Label { Left = 150, Top = 6, Width = 68, Text = "Ext:" });
-            extensionBox.Left = 220;
-            formatPanel.Controls.Add(extensionBox);
-            form.Controls.Add(formatPanel, 1, 1);
-            form.Controls.Add(new Label { Text = "Global mask:", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft }, 0, 2);
-            form.Controls.Add(new TextBox { Name = "OutputGlobalMaskBox", Dock = DockStyle.Fill, Text = DefaultIfBlank(project.Settings.OutputGlobalMask, @"apps\.env{.ext}") }, 1, 2);
-            form.Controls.Add(new Label { Text = "Global + env:", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft }, 0, 3);
-            form.Controls.Add(new TextBox { Name = "OutputEnvironmentMaskBox", Dock = DockStyle.Fill, Text = DefaultIfBlank(project.Settings.OutputEnvironmentMask, @"apps\.env.{env}{.ext}") }, 1, 3);
-            form.Controls.Add(new Label { Text = "Service:", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft }, 0, 4);
-            form.Controls.Add(new TextBox { Name = "OutputServiceMaskBox", Dock = DockStyle.Fill, Text = DefaultIfBlank(project.Settings.OutputServiceMask, @"apps\{service}\.env{.ext}") }, 1, 4);
-            form.Controls.Add(new Label { Text = "Service + env:", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft }, 0, 5);
-            form.Controls.Add(new TextBox { Name = "OutputServiceEnvironmentMaskBox", Dock = DockStyle.Fill, Text = DefaultIfBlank(project.Settings.OutputServiceEnvironmentMask, @"apps\{service}\.env.{env}{.ext}") }, 1, 5);
-            form.Controls.Add(new Label { Text = "Structured output:", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft }, 0, 6);
-            form.Controls.Add(new CheckBox { Name = "OutputStructuredSingleFileBox", Dock = DockStyle.Left, AutoSize = true, Text = "Single file for TOML / YAML / XML / JSON", Checked = project.Settings.OutputStructuredSingleFile }, 1, 6);
-            form.Controls.Add(new Label { Text = "Single file mask:", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft }, 0, 7);
-            form.Controls.Add(new TextBox { Name = "OutputStructuredSingleFileMaskBox", Dock = DockStyle.Fill, Text = DefaultIfBlank(project.Settings.OutputStructuredSingleFileMask, @"{project_name}{.ext}") }, 1, 7);
-            form.Controls.Add(new Label { Text = "Export mode:", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft }, 0, 8);
-            var renderMode = new ComboBox { Name = "OutputRenderModeCombo", Dock = DockStyle.Left, Width = 180, DropDownStyle = ComboBoxStyle.DropDownList };
-            renderMode.Items.AddRange(new object[] { "Data files", "Manifest files", "Data + manifest" });
-            renderMode.SelectedItem = GetOutputRenderModeLabel(project.Settings);
-            form.Controls.Add(renderMode, 1, 8);
-            form.Controls.Add(new Label { Text = "Manifest mask:", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft }, 0, 9);
-            form.Controls.Add(new TextBox { Name = "OutputServiceManifestMaskBox", Dock = DockStyle.Fill, Text = DefaultIfBlank(project.Settings.OutputServiceManifestMask, @"apps\{service}\.env.example") }, 1, 9);
-            form.Controls.Add(new Label { Text = "Manifest values:", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft }, 0, 10);
-            var manifestValueMode = new ComboBox { Name = "OutputServiceManifestValueModeCombo", Dock = DockStyle.Left, Width = 180, DropDownStyle = ComboBoxStyle.DropDownList };
-            manifestValueMode.Items.AddRange(new object[] { "Empty", "Demo" });
-            manifestValueMode.SelectedItem = NormalizeManifestValueMode(project.Settings.OutputServiceManifestValueMode);
-            form.Controls.Add(manifestValueMode, 1, 10);
-
-            var targetHeader = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1, Margin = Padding.Empty };
-            targetHeader.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 160));
-            targetHeader.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-            targetHeader.Controls.Add(new Label { Text = "Export matrix:", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft }, 0, 0);
-            var targetButtons = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false, Margin = Padding.Empty };
-            var outputTargetGrid = BuildOutputTargetGrid();
-            AddCommand(targetButtons, "Select All", () => SetOutputTargetGrid(outputTargetGrid, true, true), "SelectAll", 108);
-            AddCommand(targetButtons, "Select None", () => SetOutputTargetGrid(outputTargetGrid, false, true), "SelectNone", 116);
-            targetHeader.Controls.Add(targetButtons, 1, 0);
-
-            body.Controls.Add(form, 0, 0);
-            body.Controls.Add(targetHeader, 0, 1);
-            body.Controls.Add(outputTargetGrid, 0, 2);
-            root.Controls.Add(buttons, 0, 0);
-            root.Controls.Add(body, 0, 1);
-            contentPanel.Controls.Add(root);
-        }
-
-        private void BrowseOutputRootFolder(TextBox outputRootBox)
-        {
-            var selectedPath = ResolveOutputRootFolder(outputRootBox.Text);
-            using (var dialog = new FolderBrowserDialog
-            {
-                Description = "Select output folder",
-                ShowNewFolderButton = true,
-                SelectedPath = Directory.Exists(selectedPath) ? selectedPath : string.Empty
-            })
-            {
-                if (dialog.ShowDialog(this) != DialogResult.OK) return;
-                var outputRootPath = ChooseOutputRootPath(dialog.SelectedPath);
-                if (outputRootPath != null) outputRootBox.Text = outputRootPath;
-            }
-        }
-
-        private string ChooseOutputRootPath(string selectedPath)
-        {
-            var absolutePath = Path.GetFullPath(selectedPath);
-            var projectFolder = GetProjectFolder();
-            var canUseRelative = !string.IsNullOrWhiteSpace(projectFolder) && AreSamePathRoot(projectFolder, absolutePath);
-            var relativePath = canUseRelative ? MakeRelativeOutputRootFolder(projectFolder, absolutePath) : string.Empty;
-
-            using (var dialog = new Form
-            {
-                Text = "Output Folder Path",
-                StartPosition = FormStartPosition.CenterParent,
-                FormBorderStyle = FormBorderStyle.FixedDialog,
-                MaximizeBox = false,
-                MinimizeBox = false,
-                ShowInTaskbar = false,
-                ClientSize = new Size(680, 190)
-            })
-            {
-                var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 5, Padding = new Padding(12) };
-                layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
-                layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
-                layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
-                layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
-                layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-
-                var relativeCheckBox = new CheckBox
-                {
-                    Text = canUseRelative ? "Save path relative to project file" : "Save path relative to project file (not available)",
-                    Checked = canUseRelative,
-                    Enabled = canUseRelative,
-                    Dock = DockStyle.Fill
-                };
-                var absolutePreview = new TextBox { ReadOnly = true, Dock = DockStyle.Fill, Text = absolutePath };
-                var relativePreview = new TextBox { ReadOnly = true, Dock = DockStyle.Fill, Text = canUseRelative ? relativePath : "Project file and output folder are on different drives." };
-                var selectedPreview = new TextBox { ReadOnly = true, Dock = DockStyle.Fill };
-
-                Action refreshPreview = () => selectedPreview.Text = relativeCheckBox.Checked && canUseRelative ? relativePath : absolutePath;
-                relativeCheckBox.CheckedChanged += (s, e) => refreshPreview();
-                refreshPreview();
-
-                layout.Controls.Add(relativeCheckBox, 0, 0);
-                layout.Controls.Add(BuildLabeledPreview("Absolute:", absolutePreview), 0, 1);
-                layout.Controls.Add(BuildLabeledPreview("Relative:", relativePreview), 0, 2);
-                layout.Controls.Add(BuildLabeledPreview("Will save:", selectedPreview), 0, 3);
-
-                var buttons = new FlowLayoutPanel { Dock = DockStyle.Right, FlowDirection = FlowDirection.RightToLeft, WrapContents = false };
-                var okButton = new Button { Text = "OK", DialogResult = DialogResult.OK, Width = 90, Height = 26 };
-                var cancelButton = new Button { Text = "Cancel", DialogResult = DialogResult.Cancel, Width = 90, Height = 26 };
-                buttons.Controls.Add(okButton);
-                buttons.Controls.Add(cancelButton);
-                layout.Controls.Add(buttons, 0, 4);
-                dialog.Controls.Add(layout);
-                dialog.AcceptButton = okButton;
-                dialog.CancelButton = cancelButton;
-
-                return dialog.ShowDialog(this) == DialogResult.OK ? selectedPreview.Text : null;
-            }
-        }
-
-        private static Control BuildLabeledPreview(string labelText, TextBox preview)
-        {
-            var panel = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1, Margin = Padding.Empty };
-            panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 82));
-            panel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-            panel.Controls.Add(new Label { Text = labelText, Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft }, 0, 0);
-            panel.Controls.Add(preview, 1, 0);
-            return panel;
-        }
-
-        private string GetProjectFolder()
-        {
-            return !string.IsNullOrWhiteSpace(currentFilePath)
-                ? Path.GetDirectoryName(Path.GetFullPath(currentFilePath))
-                : null;
-        }
-
-        private static bool AreSamePathRoot(string leftPath, string rightPath)
-        {
-            var leftRoot = Path.GetPathRoot(Path.GetFullPath(leftPath));
-            var rightRoot = Path.GetPathRoot(Path.GetFullPath(rightPath));
-            return string.Equals(leftRoot, rightRoot, StringComparison.OrdinalIgnoreCase);
-        }
-
-        private static string MakeRelativeOutputRootFolder(string baseFolder, string targetFolder)
-        {
-            var baseUri = new Uri(EnsureDirectorySeparator(Path.GetFullPath(baseFolder)));
-            var targetUri = new Uri(EnsureDirectorySeparator(Path.GetFullPath(targetFolder)));
-            var relative = Uri.UnescapeDataString(baseUri.MakeRelativeUri(targetUri).ToString()).Replace('/', Path.DirectorySeparatorChar).TrimEnd(Path.DirectorySeparatorChar);
-            if (string.IsNullOrWhiteSpace(relative)) return @".\";
-            if (relative == ".") return @".\";
-            return relative.StartsWith("..", StringComparison.Ordinal) ? relative : @".\" + relative;
-        }
-
-        private static string EnsureDirectorySeparator(string path)
-        {
-            return path.EndsWith(Path.DirectorySeparatorChar.ToString(), StringComparison.Ordinal) ? path : path + Path.DirectorySeparatorChar;
-        }
-
-        private void ApplyExportSettingsFromView(bool markChanged = true)
-        {
-            var outputRootBox = contentPanel.Controls.Find("OutputRootBox", true).FirstOrDefault() as TextBox;
-            var outputFormatCombo = contentPanel.Controls.Find("OutputFormatCombo", true).FirstOrDefault() as ComboBox;
-            var outputExtensionBox = contentPanel.Controls.Find("OutputExtensionBox", true).FirstOrDefault() as TextBox;
-            var outputGlobalMaskBox = contentPanel.Controls.Find("OutputGlobalMaskBox", true).FirstOrDefault() as TextBox;
-            var outputEnvironmentMaskBox = contentPanel.Controls.Find("OutputEnvironmentMaskBox", true).FirstOrDefault() as TextBox;
-            var outputServiceMaskBox = contentPanel.Controls.Find("OutputServiceMaskBox", true).FirstOrDefault() as TextBox;
-            var outputServiceEnvironmentMaskBox = contentPanel.Controls.Find("OutputServiceEnvironmentMaskBox", true).FirstOrDefault() as TextBox;
-            var outputStructuredSingleFileBox = contentPanel.Controls.Find("OutputStructuredSingleFileBox", true).FirstOrDefault() as CheckBox;
-            var outputStructuredSingleFileMaskBox = contentPanel.Controls.Find("OutputStructuredSingleFileMaskBox", true).FirstOrDefault() as TextBox;
-            var outputRenderModeCombo = contentPanel.Controls.Find("OutputRenderModeCombo", true).FirstOrDefault() as ComboBox;
-            var outputServiceManifestMaskBox = contentPanel.Controls.Find("OutputServiceManifestMaskBox", true).FirstOrDefault() as TextBox;
-            var outputServiceManifestValueModeCombo = contentPanel.Controls.Find("OutputServiceManifestValueModeCombo", true).FirstOrDefault() as ComboBox;
-            if (outputFormatCombo == null) return;
-
-            project.Settings.OutputRootFolder = outputRootBox?.Text;
-            project.Settings.OutputFormat = Convert.ToString(outputFormatCombo.SelectedItem) ?? "CONFIG";
-            project.Settings.OutputExtension = outputExtensionBox?.Text;
-            project.Settings.OutputGlobalMask = outputGlobalMaskBox?.Text;
-            project.Settings.OutputEnvironmentMask = outputEnvironmentMaskBox?.Text;
-            project.Settings.OutputServiceMask = outputServiceMaskBox?.Text;
-            project.Settings.OutputServiceEnvironmentMask = outputServiceEnvironmentMaskBox?.Text;
-            project.Settings.OutputStructuredSingleFile = outputStructuredSingleFileBox?.Checked == true;
-            project.Settings.OutputStructuredSingleFileMask = outputStructuredSingleFileMaskBox?.Text;
-            SetOutputRenderMode(project.Settings, Convert.ToString(outputRenderModeCombo?.SelectedItem));
-            project.Settings.OutputServiceManifestMask = outputServiceManifestMaskBox?.Text;
-            project.Settings.OutputServiceManifestValueMode = NormalizeManifestValueMode(Convert.ToString(outputServiceManifestValueModeCombo?.SelectedItem));
-            SaveOutputTargetsFromView(false);
-            if (markChanged)
-            {
-                Changed();
-            }
-        }
-
-        private static string GetOutputRenderModeLabel(ProjectSettings settings)
-        {
-            var data = settings?.OutputDataFiles != false;
-            var manifest = settings?.OutputServiceManifest == true;
-            if (data && manifest) return "Data + manifest";
-            if (manifest) return "Manifest files";
-            return "Data files";
-        }
-
-        private static void SetOutputRenderMode(ProjectSettings settings, string label)
-        {
-            if (settings == null) return;
-            if (string.Equals(label, "Manifest files", StringComparison.OrdinalIgnoreCase))
-            {
-                settings.OutputDataFiles = false;
-                settings.OutputServiceManifest = true;
-            }
-            else if (string.Equals(label, "Data + manifest", StringComparison.OrdinalIgnoreCase))
-            {
-                settings.OutputDataFiles = true;
-                settings.OutputServiceManifest = true;
-            }
-            else
-            {
-                settings.OutputDataFiles = true;
-                settings.OutputServiceManifest = false;
-            }
-        }
-
-        private static string NormalizeManifestValueMode(string value)
-        {
-            if (string.Equals(value, "Demo", StringComparison.OrdinalIgnoreCase) ||
-                string.Equals(value, "Example", StringComparison.OrdinalIgnoreCase) ||
-                string.Equals(value, "Placeholder", StringComparison.OrdinalIgnoreCase) ||
-                string.Equals(value, "Pattern", StringComparison.OrdinalIgnoreCase))
-            {
-                return "Demo";
-            }
-            return "Empty";
-        }
-
-        private void SetProjectEncryptionMode(string label)
-        {
-            project.Settings = project.Settings ?? new ProjectSettings();
-            if (label == EncryptionWholeJson)
-            {
-                project.Settings.EncryptionMode = "WholeJson";
-                project.Settings.EncryptAllValues = false;
-            }
-            else if (label == EncryptionAllValues)
-            {
-                project.Settings.EncryptionMode = "AllValues";
-                project.Settings.EncryptAllValues = true;
-            }
-            else if (label == EncryptionSecrets)
-            {
-                project.Settings.EncryptionMode = "SecretsOnly";
-                project.Settings.EncryptAllValues = false;
-            }
-            else
-            {
-                project.Settings.EncryptionMode = "Open";
-                project.Settings.EncryptAllValues = false;
-            }
-        }
-
-        private static string GetProjectEncryptionMode(ProjectModel targetProject)
-        {
-            var settings = targetProject?.Settings;
-            if (settings == null) return "Open";
-            if (!string.IsNullOrWhiteSpace(settings.EncryptionMode)) return settings.EncryptionMode;
-            return settings.EncryptAllValues ? "AllValues" : "Open";
-        }
-
-        private static string GetProjectEncryptionModeLabel(ProjectModel targetProject)
-        {
-            var mode = GetProjectEncryptionMode(targetProject);
-            if (string.Equals(mode, "WholeJson", StringComparison.OrdinalIgnoreCase)) return EncryptionWholeJson;
-            if (string.Equals(mode, "AllValues", StringComparison.OrdinalIgnoreCase)) return EncryptionAllValues;
-            if (string.Equals(mode, "SecretsOnly", StringComparison.OrdinalIgnoreCase)) return EncryptionSecrets;
-            return EncryptionOpen;
-        }
-
-        private void RenderOutputFiles()
-        {
-            if (project == null) return;
-            project.Settings = project.Settings ?? new ProjectSettings();
-            if (string.IsNullOrWhiteSpace(project.Settings.OutputRootFolder))
-            {
-                MessageBox.Show(this, "Set Export -> Out folder before exporting files.", "Export", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                currentView = "Export";
-                RenderCurrentView();
-                return;
-            }
-
-            var outputRootFolder = ResolveOutputRootFolder(project.Settings.OutputRootFolder);
-            if (!EnsureOutputRootFolderExists(outputRootFolder))
-            {
-                return;
-            }
-
-            var targets = GetConfiguredOutputTargets();
-            if (targets == null || targets.Count == 0) return;
-
-            var format = NormalizeOutputFormat(project.Settings.OutputFormat);
-            var rendered = 0;
-            if (project.Settings.OutputDataFiles != false && project.Settings.OutputStructuredSingleFile && format != "CONFIG")
-            {
-                var path = BuildStructuredOutputPath();
-                var directory = Path.GetDirectoryName(path);
-                if (!string.IsNullOrWhiteSpace(directory)) Directory.CreateDirectory(directory);
-                File.WriteAllText(path, FormatStructuredOutput(targets, format));
-                rendered++;
-            }
-            else if (project.Settings.OutputDataFiles != false)
-            {
-                foreach (var target in targets)
-                {
-                    var values = BuildOutputValues(target.Service, target.Environment);
-                    var path = BuildOutputPath(target);
-                    Directory.CreateDirectory(Path.GetDirectoryName(path));
-                    File.WriteAllText(path, FormatOutputValues(values, format));
-                    rendered++;
-                }
-            }
-
-            if (project.Settings.OutputServiceManifest)
-            {
-                rendered += RenderServiceManifestFiles(targets);
-            }
-
-            MessageBox.Show(this, $"Exported {rendered} file(s).", "Export");
-        }
-
-        private int RenderServiceManifestFiles(List<OutputTarget> targets)
-        {
-            var rendered = 0;
-            foreach (var service in targets
-                .Select(t => t.Service)
-                .Where(s => s != null)
-                .GroupBy(s => s.Id)
-                .Select(g => g.First())
-                .OrderBy(s => s.SortOrder)
-                .ThenBy(s => s.Name))
-            {
-                var content = BuildServiceManifestContent(service);
-                var path = BuildServiceManifestPath(service);
-                Directory.CreateDirectory(Path.GetDirectoryName(path));
-                File.WriteAllText(path, content);
-                rendered++;
-            }
-            return rendered;
-        }
-
-        private bool EnsureOutputRootFolderExists(string outputRootFolder)
-        {
-            if (Directory.Exists(outputRootFolder)) return true;
-
-            var result = MessageBox.Show(
-                this,
-                "Output folder does not exist. Create it now?" + Environment.NewLine + outputRootFolder,
-                "Export",
-                MessageBoxButtons.YesNo,
-                MessageBoxIcon.Warning);
-            if (result != DialogResult.Yes) return false;
-
-            try
-            {
-                Directory.CreateDirectory(outputRootFolder);
-                return true;
-            }
-            catch (Exception ex)
-            {
-                MessageBox.Show(this, "Could not create output folder." + Environment.NewLine + ex.Message, "Export", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                return false;
-            }
-        }
-
-        private DataGridView BuildOutputTargetGrid()
-        {
-            var grid = new DataGridView
-            {
-                Name = "OutputTargetGrid",
-                Dock = DockStyle.Fill,
-                AllowUserToAddRows = false,
-                AllowUserToDeleteRows = false,
-                RowHeadersVisible = false,
-                AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill
-            };
-            grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Service", HeaderText = "Service", ReadOnly = true });
-            grid.Columns.Add(new DataGridViewCheckBoxColumn { Name = "env_global", HeaderText = "Global environment" });
-            foreach (var env in project.Environments.OrderBy(e => e.SortOrder))
-            {
-                grid.Columns.Add(new DataGridViewCheckBoxColumn { Name = "env_" + env.Id, HeaderText = env.Name, Tag = env });
-            }
-
-            foreach (var service in project.Services.OrderBy(s => s.SortOrder))
-            {
-                AddOutputTargetRow(grid, service);
-            }
-
-            grid.CurrentCellDirtyStateChanged += (s, e) =>
-            {
-                if (grid.IsCurrentCellDirty) grid.CommitEdit(DataGridViewDataErrorContexts.Commit);
-            };
-            grid.CellValueChanged += (s, e) =>
-            {
-                if (suppressOutputTargetGridEvents) return;
-                if (e.RowIndex < 0 || e.ColumnIndex < 0) return;
-                if (grid.Columns[e.ColumnIndex].Name == "Service") return;
-                SaveOutputTargetsFromGrid(grid, true);
-            };
-            return grid;
-        }
-
-        private void AddOutputTargetRow(DataGridView grid, ServiceModel service)
-        {
-            var rowIndex = grid.Rows.Add();
-            var row = grid.Rows[rowIndex];
-            row.Tag = service;
-            row.Cells["Service"].Value = service.Name;
-            foreach (DataGridViewColumn column in grid.Columns)
-            {
-                if (column.Name != "Service") row.Cells[column.Name].Value = IsOutputTargetEnabled(service.Id, (column.Tag as EnvironmentModel)?.Id);
-            }
-        }
-
-        private void SetOutputTargetGrid(DataGridView grid, bool value, bool persist)
-        {
-            suppressOutputTargetGridEvents = true;
-            grid.SuspendLayout();
-            try
-            {
-                foreach (DataGridViewRow row in grid.Rows)
-                {
-                    foreach (DataGridViewColumn column in grid.Columns)
-                    {
-                        if (column.Name != "Service") row.Cells[column.Name].Value = value;
-                    }
-                }
-            }
-            finally
-            {
-                suppressOutputTargetGridEvents = false;
-                grid.ResumeLayout();
-                grid.Invalidate();
-            }
-
-            if (persist) SaveOutputTargetsFromGrid(grid, true);
-        }
-
-        private bool IsOutputTargetEnabled(string serviceId, string environmentId)
-        {
-            var targets = project.Settings?.OutputTargets;
-            if (targets == null || targets.Count == 0) return true;
-            var target = targets.FirstOrDefault(x => SameNullable(x.ServiceId, serviceId) && SameNullable(x.EnvironmentId, environmentId));
-            return target?.Enabled == true;
-        }
-
-        private static bool SameNullable(string left, string right)
-        {
-            return string.Equals(left ?? string.Empty, right ?? string.Empty, StringComparison.OrdinalIgnoreCase);
-        }
-
-        private void SaveOutputTargetsFromView(bool markChanged)
-        {
-            var grid = contentPanel.Controls.Find("OutputTargetGrid", true).FirstOrDefault() as DataGridView;
-            if (grid == null) return;
-            SaveOutputTargetsFromGrid(grid, markChanged);
-        }
-
-        private void SaveOutputTargetsFromGrid(DataGridView grid, bool markChanged)
-        {
-            project.Settings = project.Settings ?? new ProjectSettings();
-            project.Settings.OutputTargets = new List<OutputTargetSetting>();
-            foreach (DataGridViewRow row in grid.Rows)
-            {
-                var service = row.Tag as ServiceModel;
-                foreach (DataGridViewColumn column in grid.Columns)
-                {
-                    if (column.Name == "Service") continue;
-                    project.Settings.OutputTargets.Add(new OutputTargetSetting
-                    {
-                        ServiceId = service?.Id,
-                        EnvironmentId = (column.Tag as EnvironmentModel)?.Id,
-                        Enabled = Convert.ToBoolean(row.Cells[column.Name].Value ?? false)
-                    });
-                }
-            }
-
-            if (markChanged) Changed();
-        }
-
-        private List<OutputTarget> GetConfiguredOutputTargets()
-        {
-            SaveOutputTargetsFromView(false);
-            var result = new List<OutputTarget>();
-            var services = project.Services.OrderBy(s => s.SortOrder).ToList();
-            var environments = new EnvironmentModel[] { null }.Concat(project.Environments.OrderBy(e => e.SortOrder)).ToList();
-            foreach (var service in services)
-            {
-                foreach (var environment in environments)
-                {
-                    if (IsOutputTargetEnabled(service.Id, environment?.Id))
-                    {
-                        result.Add(new OutputTarget(service, environment));
-                    }
-                }
-            }
-
-            if (result.Count == 0)
-            {
-                MessageBox.Show(this, "No export targets selected.", "Export", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-            }
-
-            return result;
-        }
-
-        private Dictionary<string, string> BuildOutputValues(ServiceModel service, EnvironmentModel environment)
-        {
-            var effective = effectiveConfigService.Build(project, service?.Id, environment?.Id).Where(x => !x.Missing);
-            if (service != null)
-            {
-                effective = effective.Where(x => IsVariableUsedByService(x.Variable.Id, service.Id));
-            }
-
-            return effective
-                .OrderBy(x => x.Variable.SortOrder)
-                .ThenBy(x => x.Variable.Key)
-                .ToDictionary(x => x.Variable.Key, x => x.Value ?? string.Empty);
-        }
-
-        private string BuildServiceManifestContent(ServiceModel service)
-        {
-            var mode = NormalizeManifestValueMode(project.Settings.OutputServiceManifestValueMode);
-            return string.Join(Environment.NewLine, ProjectService.GetVariablesUsedByService(project, service.Id)
-                .Select(v => ManifestLine(v, mode)));
-        }
-
-        private static string ManifestLine(VariableDefinitionModel variable, string mode)
-        {
-            if (!string.Equals(mode, "Demo", StringComparison.OrdinalIgnoreCase))
-            {
-                return variable.Key + "=";
-            }
-
-            var line = variable.Key + "=" + (variable.DemoValue ?? string.Empty);
-            var comment = SingleLineComment(variable.DemoComment);
-            return string.IsNullOrWhiteSpace(comment) ? line : line + " # " + comment;
-        }
-
-        private static string SingleLineComment(string value)
-        {
-            return (value ?? string.Empty).Replace("\r", " ").Replace("\n", " ").Trim();
-        }
-
-        private string BuildOutputPath(OutputTarget target)
-        {
-            var mask = target.Service == null && target.Environment == null
-                ? DefaultIfBlank(project.Settings.OutputGlobalMask, @"apps\.env{.ext}")
-                : target.Service == null
-                    ? DefaultIfBlank(project.Settings.OutputEnvironmentMask, @"apps\.env.{env}{.ext}")
-                    : target.Environment == null
-                        ? DefaultIfBlank(project.Settings.OutputServiceMask, @"apps\{service}\.env{.ext}")
-                        : DefaultIfBlank(project.Settings.OutputServiceEnvironmentMask, @"apps\{service}\.env.{env}{.ext}");
-            var ext = NormalizeOutputExtension(project.Settings.OutputExtension, project.Settings.OutputFormat);
-            var relative = ApplyOutputMaskPlaceholders(mask, ext, ExportServiceName(target.Service, "CONFIG", true), ExportEnvironmentName(target.Environment, "CONFIG"));
-            relative = relative.TrimStart('\\', '/');
-            return Path.Combine(ResolveOutputRootFolder(project.Settings.OutputRootFolder), relative);
-        }
-
-        private string BuildStructuredOutputPath()
-        {
-            var ext = NormalizeOutputExtension(project.Settings.OutputExtension, project.Settings.OutputFormat);
-            var relative = ApplyOutputMaskPlaceholders(DefaultIfBlank(project.Settings.OutputStructuredSingleFileMask, @"{project_name}{.ext}"), ext, string.Empty, string.Empty)
-                .TrimStart('\\', '/');
-            return Path.Combine(ResolveOutputRootFolder(project.Settings.OutputRootFolder), relative);
-        }
-
-        private string BuildServiceManifestPath(ServiceModel service)
-        {
-            var relative = ApplyOutputMaskPlaceholders(DefaultIfBlank(project.Settings.OutputServiceManifestMask, @"apps\{service}\.env.example"), string.Empty, ExportServiceName(service, "CONFIG", true), string.Empty)
-                .TrimStart('\\', '/');
-            return Path.Combine(ResolveOutputRootFolder(project.Settings.OutputRootFolder), relative);
-        }
-
-        private string ResolveOutputRootFolder(string outputRootFolder)
-        {
-            if (string.IsNullOrWhiteSpace(outputRootFolder) || Path.IsPathRooted(outputRootFolder))
-            {
-                return outputRootFolder;
-            }
-
-            var baseFolder = !string.IsNullOrWhiteSpace(currentFilePath)
-                ? Path.GetDirectoryName(Path.GetFullPath(currentFilePath))
-                : Environment.CurrentDirectory;
-            return Path.GetFullPath(Path.Combine(baseFolder ?? Environment.CurrentDirectory, outputRootFolder));
-        }
-
-        private string ApplyOutputMaskPlaceholders(string mask, string extension, string serviceName, string environmentName)
-        {
-            var projectName = SafeOutputName(DefaultIfBlank(project.ProjectName, project.ProjectId));
-            var result = (mask ?? string.Empty)
-                .Replace("{project_name}", projectName)
-                .Replace("{project}", projectName)
-                .Replace("{service}", serviceName ?? string.Empty)
-                .Replace("{env}", environmentName ?? string.Empty)
-                .Replace("{.ext}", extension)
-                .Replace("{ext}", extension.TrimStart('.'));
-            return NormalizeRelativeOutputMask(result);
-        }
-
-        private static string NormalizeRelativeOutputMask(string value)
-        {
-            value = value ?? string.Empty;
-            while (value.Contains(@"\\"))
-            {
-                value = value.Replace(@"\\", @"\");
-            }
-            while (value.Contains("//"))
-            {
-                value = value.Replace("//", "/");
-            }
-            return value;
-        }
-
-        private static string SafeOutputName(string value)
-        {
-            value = string.IsNullOrWhiteSpace(value) ? "project" : value.Trim();
-            foreach (var invalid in Path.GetInvalidFileNameChars().Concat(Path.GetInvalidPathChars()).Distinct())
-            {
-                value = value.Replace(invalid, '-');
-            }
-            return value;
-        }
-
-        private string FormatStructuredOutput(List<OutputTarget> targets, string format)
-        {
-            if (format == "JSON")
-            {
-                return new JavaScriptSerializer().Serialize(BuildStructuredOutputObject(targets));
-            }
-            if (format == "XML")
-            {
-                return FormatStructuredXml(targets);
-            }
-            if (format == "YAML")
-            {
-                return FormatStructuredYaml(targets);
-            }
-            if (format == "TOML")
-            {
-                return FormatStructuredToml(targets);
-            }
-
-            return string.Join(Environment.NewLine, targets.SelectMany(target => BuildOutputValues(target.Service, target.Environment)).Select(pair => $"{pair.Key}={pair.Value}"));
-        }
-
-        private Dictionary<string, object> BuildStructuredOutputObject(List<OutputTarget> targets)
-        {
-            var result = new Dictionary<string, object>();
-            var environments = new Dictionary<string, object>();
-            var services = new Dictionary<string, object>();
-
-            foreach (var target in targets)
-            {
-                var values = BuildOutputValues(target.Service, target.Environment);
-                if (target.Service == null && target.Environment == null)
-                {
-                    result["global"] = values;
-                }
-                else if (target.Service == null)
-                {
-                    environments[ExportEnvironmentName(target.Environment, "JSON")] = values;
-                }
-                else
-                {
-                    var serviceName = ExportServiceName(target.Service, "JSON", false);
-                    if (!services.TryGetValue(serviceName, out var serviceObject))
-                    {
-                        serviceObject = new Dictionary<string, object>();
-                        services[serviceName] = serviceObject;
-                    }
-
-                    var serviceMap = (Dictionary<string, object>)serviceObject;
-                    if (target.Environment == null)
-                    {
-                        serviceMap["global"] = values;
-                    }
-                    else
-                    {
-                        if (!serviceMap.TryGetValue("environments", out var serviceEnvironmentsObject))
-                        {
-                            serviceEnvironmentsObject = new Dictionary<string, object>();
-                            serviceMap["environments"] = serviceEnvironmentsObject;
-                        }
-                        ((Dictionary<string, object>)serviceEnvironmentsObject)[ExportEnvironmentName(target.Environment, "JSON")] = values;
-                    }
-                }
-            }
-
-            if (environments.Count > 0) result["environments"] = environments;
-            if (services.Count > 0) result["services"] = services;
-            return result;
-        }
-
-        private string FormatStructuredToml(List<OutputTarget> targets)
-        {
-            var lines = new List<string>();
-            foreach (var target in targets)
-            {
-                var table = target.Service == null && target.Environment == null
-                    ? "global"
-                    : target.Service == null
-                        ? "environments." + TomlPathSegment(ExportEnvironmentName(target.Environment, "TOML"))
-                        : target.Environment == null
-                            ? "services." + TomlPathSegment(ExportServiceName(target.Service, "TOML", false)) + ".global"
-                            : "services." + TomlPathSegment(ExportServiceName(target.Service, "TOML", false)) + ".environments." + TomlPathSegment(ExportEnvironmentName(target.Environment, "TOML"));
-                if (lines.Count > 0) lines.Add(string.Empty);
-                lines.Add("[" + table + "]");
-                lines.AddRange(BuildOutputValues(target.Service, target.Environment).Select(pair => TomlKey(pair.Key) + " = " + QuoteJson(pair.Value)));
-            }
-            return string.Join(Environment.NewLine, lines);
-        }
-
-        private string FormatStructuredYaml(List<OutputTarget> targets)
-        {
-            var lines = new List<string>();
-            var global = targets.FirstOrDefault(t => t.Service == null && t.Environment == null);
-            if (global != null)
-            {
-                lines.Add("global:");
-                AppendYamlValues(lines, BuildOutputValues(null, null), 2);
-            }
-
-            var environmentTargets = targets.Where(t => t.Service == null && t.Environment != null).ToList();
-            if (environmentTargets.Count > 0)
-            {
-                lines.Add("environments:");
-                foreach (var target in environmentTargets)
-                {
-                    lines.Add("  " + YamlKey(ExportEnvironmentName(target.Environment, "YAML")) + ":");
-                    AppendYamlValues(lines, BuildOutputValues(null, target.Environment), 4);
-                }
-            }
-
-            var serviceTargets = targets.Where(t => t.Service != null).GroupBy(t => t.Service.Id).ToList();
-            if (serviceTargets.Count > 0)
-            {
-                lines.Add("services:");
-                foreach (var serviceGroup in serviceTargets)
-                {
-                    var service = serviceGroup.First().Service;
-                    lines.Add("  " + YamlKey(ExportServiceName(service, "YAML", false)) + ":");
-                    var serviceGlobal = serviceGroup.FirstOrDefault(t => t.Environment == null);
-                    if (serviceGlobal != null)
-                    {
-                        lines.Add("    global:");
-                        AppendYamlValues(lines, BuildOutputValues(service, null), 6);
-                    }
-
-                    var serviceEnvironmentTargets = serviceGroup.Where(t => t.Environment != null).ToList();
-                    if (serviceEnvironmentTargets.Count > 0)
-                    {
-                        lines.Add("    environments:");
-                        foreach (var target in serviceEnvironmentTargets)
-                        {
-                            lines.Add("      " + YamlKey(ExportEnvironmentName(target.Environment, "YAML")) + ":");
-                            AppendYamlValues(lines, BuildOutputValues(service, target.Environment), 8);
-                        }
-                    }
-                }
-            }
-
-            return string.Join(Environment.NewLine, lines);
-        }
-
-        private string FormatStructuredXml(List<OutputTarget> targets)
-        {
-            var lines = new List<string> { "<?xml version=\"1.0\" encoding=\"utf-8\"?>", "<config>" };
-            foreach (var target in targets)
-            {
-                if (target.Service == null && target.Environment == null)
-                {
-                    lines.Add("  <global>");
-                    AppendXmlValues(lines, BuildOutputValues(null, null), 4);
-                    lines.Add("  </global>");
-                }
-                else if (target.Service == null)
-                {
-                    lines.Add($"  <environment name=\"{EscapeXml(ExportEnvironmentName(target.Environment, "XML"))}\">");
-                    AppendXmlValues(lines, BuildOutputValues(null, target.Environment), 4);
-                    lines.Add("  </environment>");
-                }
-                else if (target.Environment == null)
-                {
-                    lines.Add($"  <service name=\"{EscapeXml(ExportServiceName(target.Service, "XML", false))}\">");
-                    lines.Add("    <global>");
-                    AppendXmlValues(lines, BuildOutputValues(target.Service, null), 6);
-                    lines.Add("    </global>");
-                    lines.Add("  </service>");
-                }
-                else
-                {
-                    lines.Add($"  <service name=\"{EscapeXml(ExportServiceName(target.Service, "XML", false))}\" environment=\"{EscapeXml(ExportEnvironmentName(target.Environment, "XML"))}\">");
-                    AppendXmlValues(lines, BuildOutputValues(target.Service, target.Environment), 4);
-                    lines.Add("  </service>");
-                }
-            }
-            lines.Add("</config>");
-            return string.Join(Environment.NewLine, lines);
-        }
-
-        private static void AppendYamlValues(List<string> lines, Dictionary<string, string> values, int indent)
-        {
-            var prefix = new string(' ', indent);
-            foreach (var pair in values)
-            {
-                lines.Add(prefix + YamlKey(pair.Key) + ": " + QuoteYaml(pair.Value));
-            }
-        }
-
-        private static void AppendXmlValues(List<string> lines, Dictionary<string, string> values, int indent)
-        {
-            var prefix = new string(' ', indent);
-            foreach (var pair in values)
-            {
-                lines.Add(prefix + $"<add key=\"{EscapeXml(pair.Key)}\" value=\"{EscapeXml(pair.Value)}\" />");
-            }
-        }
-
-        private static string TomlKey(string value)
-        {
-            return "\"" + (value ?? string.Empty).Replace("\\", "\\\\").Replace("\"", "\\\"") + "\"";
-        }
-
-        private static string TomlPathSegment(string value)
-        {
-            return "\"" + (value ?? string.Empty).Replace("\\", "\\\\").Replace("\"", "\\\"") + "\"";
-        }
-
-        private static string YamlKey(string value)
-        {
-            if ((value ?? string.Empty).All(ch => char.IsLetterOrDigit(ch) || ch == '_' || ch == '-')) return value;
-            return QuoteYaml(value);
-        }
-
-        private static string ExportServiceName(ServiceModel service, string format, bool pathName)
-        {
-            if (service == null) return string.Empty;
-            format = NormalizeOutputFormat(format);
-            if (format == "CONFIG")
-            {
-                return DefaultIfBlank(service.ConfigName, pathName ? OutputFolderPathSegment(service) : service.Name);
-            }
-            if (format == "TOML") return DefaultIfBlank(service.TomlName, service.Name);
-            if (format == "YAML") return DefaultIfBlank(service.YamlName, service.Name);
-            if (format == "XML") return DefaultIfBlank(service.XmlName, service.Name);
-            if (format == "JSON") return DefaultIfBlank(service.JsonName, service.Name);
-            return service.Name;
-        }
-
-        private static string OutputFolderPathSegment(ServiceModel service)
-        {
-            if (service == null) return string.Empty;
-            return service.OutputFolder == null ? service.Name : service.OutputFolder.Trim();
-        }
-
-        private static string NormalizeOutputFolderKey(string value)
-        {
-            return (value ?? string.Empty).Trim().Trim('\\', '/');
-        }
-
-        private static string ExportEnvironmentName(EnvironmentModel environment, string format)
-        {
-            if (environment == null) return string.Empty;
-            format = NormalizeOutputFormat(format);
-            if (format == "CONFIG") return DefaultIfBlank(environment.ConfigName, environment.Name);
-            if (format == "TOML") return DefaultIfBlank(environment.TomlName, environment.Name);
-            if (format == "YAML") return DefaultIfBlank(environment.YamlName, environment.Name);
-            if (format == "XML") return DefaultIfBlank(environment.XmlName, environment.Name);
-            if (format == "JSON") return DefaultIfBlank(environment.JsonName, environment.Name);
-            return environment.Name;
-        }
-
-        private static string FormatOutputValues(Dictionary<string, string> values, string format)
-        {
-            if (format == "JSON")
-            {
-                return new JavaScriptSerializer().Serialize(values);
-            }
-            if (format == "XML")
-            {
-                var lines = new List<string> { "<?xml version=\"1.0\" encoding=\"utf-8\"?>", "<config>" };
-                lines.AddRange(values.Select(pair => $"  <add key=\"{EscapeXml(pair.Key)}\" value=\"{EscapeXml(pair.Value)}\" />"));
-                lines.Add("</config>");
-                return string.Join(Environment.NewLine, lines);
-            }
-            if (format == "YAML")
-            {
-                return string.Join(Environment.NewLine, values.Select(pair => $"{pair.Key}: {QuoteYaml(pair.Value)}"));
-            }
-            if (format == "TOML")
-            {
-                return string.Join(Environment.NewLine, values.Select(pair => $"{pair.Key} = {QuoteJson(pair.Value)}"));
-            }
-
-            return string.Join(Environment.NewLine, values.Select(pair => $"{pair.Key}={pair.Value}"));
-        }
-
-        private static string NormalizeOutputFormat(string format)
-        {
-            format = (format ?? "CONFIG").Trim().ToUpperInvariant();
-            return new[] { "CONFIG", "TOML", "YAML", "XML", "JSON" }.Contains(format) ? format : "CONFIG";
-        }
-
-        private static string DefaultOutputExtension(string format)
-        {
-            format = NormalizeOutputFormat(format);
-            if (format == "TOML") return ".toml";
-            if (format == "YAML") return ".yaml";
-            if (format == "XML") return ".xml";
-            if (format == "JSON") return ".json";
-            return ".env";
-        }
-
-        private static string NormalizeOutputExtension(string extension, string format)
-        {
-            if (string.IsNullOrWhiteSpace(extension)) return DefaultOutputExtension(format);
-            extension = extension.Trim();
-            return extension.StartsWith(".") ? extension : "." + extension;
-        }
-
-        private static string DefaultIfBlank(string value, string defaultValue)
-        {
-            return string.IsNullOrWhiteSpace(value) ? defaultValue : value;
-        }
-
-        private static string EscapeXml(string value)
-        {
-            return System.Security.SecurityElement.Escape(value ?? string.Empty);
-        }
-
-        private static string QuoteYaml(string value)
-        {
-            return QuoteJson(value);
-        }
-
-        private static string QuoteJson(string value)
-        {
-            return new JavaScriptSerializer().Serialize(value ?? string.Empty);
         }
 
         private Control BuildViewHeader(string title, string description)
@@ -2287,6 +1332,7 @@ namespace EnvSecured.WinForms.Forms
                 matrix.Columns.Add(new DataGridViewCheckBoxColumn { Name = "Visible", HeaderText = "Scope", FillWeight = 45 });
                 matrix.Columns.Add(new DataGridViewCheckBoxColumn { Name = "Override", HeaderText = "Override", FillWeight = 55 });
                 matrix.Columns.Add(new DataGridViewCheckBoxColumn { Name = "Use", HeaderText = "Export", FillWeight = 45 });
+                matrix.Columns.Add(new DataGridViewCheckBoxColumn { Name = "Sync", HeaderText = "Sync", FillWeight = 45 });
                 matrix.Columns.Add(new DataGridViewTextBoxColumn
                 {
                     Name = "env_global",
@@ -2366,9 +1412,12 @@ namespace EnvSecured.WinForms.Forms
             row.Cells["Use"].Value = service != null && visible && IsVariableUsedByService(variable.Id, service.Id);
             row.Cells["Use"].ReadOnly = service == null || !visible;
             row.Cells["Use"].Style.BackColor = row.Cells["Use"].ReadOnly ? SystemColors.ControlLight : Color.White;
+            row.Cells["Sync"].Value = service != null && visible && ProjectService.IsVariableSyncEnabledForService(project, variable.Id, service.Id);
+            row.Cells["Sync"].ReadOnly = service == null || !visible;
+            row.Cells["Sync"].Style.BackColor = row.Cells["Sync"].ReadOnly ? SystemColors.ControlLight : Color.White;
             foreach (DataGridViewColumn column in matrix.Columns)
             {
-                if (column.Name == "Service" || column.Name == "Owner" || column.Name == "Use" || column.Name == "Visible" || column.Name == "Override") continue;
+                if (column.Name == "Service" || column.Name == "Owner" || column.Name == "Use" || column.Name == "Sync" || column.Name == "Visible" || column.Name == "Override") continue;
                 var environment = column.Tag as EnvironmentModel;
                 var state = ResolveVariableMatrixCell(variable, service, environment, valueColors);
                 var cell = row.Cells[column.Name];
@@ -2451,7 +1500,7 @@ namespace EnvSecured.WinForms.Forms
 
         private void VariableMatrixCellDoubleClick(object sender, DataGridViewCellEventArgs e)
         {
-            if (e.RowIndex < 0 || e.ColumnIndex <= 4) return;
+            if (e.RowIndex < 0 || e.ColumnIndex <= 5) return;
             var matrix = sender as DataGridView;
             if (matrix == null) return;
             SetVariableMatrixDirectValue(matrix, e.RowIndex, e.ColumnIndex);
@@ -2463,7 +1512,7 @@ namespace EnvSecured.WinForms.Forms
             var matrix = sender as DataGridView;
             if (matrix == null) return;
             SelectGridCell(matrix, e.RowIndex, e.ColumnIndex);
-            var target = e.ColumnIndex > 4 ? MatrixTargetFromCell(matrix, e.RowIndex, e.ColumnIndex) : null;
+            var target = e.ColumnIndex > 5 ? MatrixTargetFromCell(matrix, e.RowIndex, e.ColumnIndex) : null;
             var variable = target?.Variable ?? project?.Variables.FirstOrDefault(v => v.Id == Convert.ToString(matrix.Tag));
             var effective = target == null
                 ? null
@@ -2508,7 +1557,7 @@ namespace EnvSecured.WinForms.Forms
             var matrix = sender as DataGridView;
             if (matrix == null) return;
             var changedColumnName = matrix.Columns[e.ColumnIndex].Name;
-            if (changedColumnName != "Owner" && changedColumnName != "Use" && changedColumnName != "Visible" && changedColumnName != "Override") return;
+            if (changedColumnName != "Owner" && changedColumnName != "Use" && changedColumnName != "Sync" && changedColumnName != "Visible" && changedColumnName != "Override") return;
             var variableId = Convert.ToString(matrix.Tag);
             var serviceId = Convert.ToString(matrix.Rows[e.RowIndex].Tag);
             if (string.IsNullOrWhiteSpace(variableId)) return;
@@ -2553,6 +1602,7 @@ namespace EnvSecured.WinForms.Forms
 
             if (string.IsNullOrWhiteSpace(serviceId)) return;
             var export = Convert.ToBoolean(matrix.Rows[e.RowIndex].Cells["Use"].Value ?? false);
+            var sync = Convert.ToBoolean(matrix.Rows[e.RowIndex].Cells["Sync"].Value ?? false);
             var visible = Convert.ToBoolean(matrix.Rows[e.RowIndex].Cells["Visible"].Value ?? false);
             var allowOverride = Convert.ToBoolean(matrix.Rows[e.RowIndex].Cells["Override"].Value ?? false);
             var wasVisible = ProjectService.IsVariableVisibleToService(project, variable, serviceId);
@@ -2577,9 +1627,10 @@ namespace EnvSecured.WinForms.Forms
             if (!visible)
             {
                 export = false;
+                sync = false;
                 allowOverride = false;
             }
-            SetVariableServiceContractFlags(variableId, serviceId, export, visible, allowOverride);
+            SetVariableServiceContractFlags(variableId, serviceId, export, visible, allowOverride, sync);
 
             RefreshAfterVariableMatrixChange(matrix, variable, e.RowIndex, e.ColumnIndex);
         }
@@ -2604,7 +1655,7 @@ namespace EnvSecured.WinForms.Forms
             return ProjectService.MoveOwnerValues(before, variableId, oldOwnerServiceId, newOwnerServiceId);
         }
 
-        private void SetVariableServiceContractFlags(string variableId, string serviceId, bool export, bool visible, bool allowOverride)
+        private void SetVariableServiceContractFlags(string variableId, string serviceId, bool export, bool visible, bool allowOverride, bool? sync = null)
         {
             var existing = project.Contracts.FirstOrDefault(c => c.VariableId == variableId && c.ServiceId == serviceId);
             if (existing == null)
@@ -2620,6 +1671,7 @@ namespace EnvSecured.WinForms.Forms
             }
 
             existing.Excluded = !export;
+            existing.Sync = sync ?? existing.Sync ?? export;
             existing.Required = export;
             existing.VisibleToService = visible;
             existing.AllowOverride = visible && allowOverride;
@@ -2630,7 +1682,7 @@ namespace EnvSecured.WinForms.Forms
         {
             if (e.KeyCode != Keys.Delete) return;
             var matrix = sender as DataGridView;
-            if (matrix?.CurrentCell == null || matrix.CurrentCell.RowIndex < 0 || matrix.CurrentCell.ColumnIndex <= 4) return;
+            if (matrix?.CurrentCell == null || matrix.CurrentCell.RowIndex < 0 || matrix.CurrentCell.ColumnIndex <= 5) return;
             DeleteVariableMatrixDirectValue(matrix, matrix.CurrentCell.RowIndex, matrix.CurrentCell.ColumnIndex);
             e.Handled = true;
         }
@@ -2917,1407 +1969,6 @@ namespace EnvSecured.WinForms.Forms
             contentPanel.Controls.Add(root);
         }
 
-        private void RenderScopeView()
-        {
-            var root = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 2 };
-            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
-            root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-
-            var buttons = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false };
-            AddCommand(buttons, "Apply Changes", ApplyScopeMatrix, "Apply", 132);
-            buttons.Controls.Add(new Label
-            {
-                Text = "Scope Matrix: NONE, Read, Override, Export, Full",
-                AutoSize = true,
-                Padding = new Padding(12, 7, 0, 0),
-                Font = new Font(Font, FontStyle.Bold)
-            });
-
-            scopeMatrix = new DataGridView
-            {
-                Dock = DockStyle.Fill,
-                AllowUserToAddRows = false,
-                AllowUserToDeleteRows = false,
-                AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill,
-                SelectionMode = DataGridViewSelectionMode.CellSelect
-            };
-            scopeMatrix.DataError += (s, e) => { e.ThrowException = false; };
-            scopeMatrix.CellValueChanged += (s, e) =>
-            {
-                if (e.RowIndex < 0 || e.ColumnIndex < 0) return;
-                var cell = scopeMatrix.Rows[e.RowIndex].Cells[e.ColumnIndex];
-                ApplyScopeModeCellStyle(cell, Convert.ToString(cell.Value));
-            };
-            scopeMatrix.CurrentCellDirtyStateChanged += (s, e) =>
-            {
-                if (scopeMatrix.IsCurrentCellDirty)
-                {
-                    scopeMatrix.CommitEdit(DataGridViewDataErrorContexts.Commit);
-                }
-            };
-            BuildScopeMatrix();
-            AttachColumnWidthPersistence(scopeMatrix, "Scope");
-            RestoreColumnWidths(scopeMatrix, "Scope");
-            root.Controls.Add(buttons, 0, 0);
-            root.Controls.Add(scopeMatrix, 0, 1);
-            contentPanel.Controls.Add(root);
-        }
-
-        private void RenderImportView()
-        {
-            var root = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 4 };
-            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
-            root.RowStyles.Add(new RowStyle(SizeType.Percent, 38));
-            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
-            root.RowStyles.Add(new RowStyle(SizeType.Percent, 62));
-
-            var fileButtons = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false };
-            AddCommand(fileButtons, "Add Files", AddImportFiles, "FilesAdd", 110);
-            AddCommand(fileButtons, "Select All", () => SetImportFilesSelected(true), "SelectAll", 108);
-            AddCommand(fileButtons, "Select None", () => SetImportFilesSelected(false), "SelectNone", 116);
-            removeImportFilesButton = AddCommand(fileButtons, "Remove Files", RemoveImportFile, "FilesRemove", 124);
-            setImportEnvironmentButton = AddCommand(fileButtons, "Set Env For Selected", SetImportEnvironmentForSelected, "Environments", 154);
-            setImportServiceButton = AddCommand(fileButtons, "Set Service For Selected", SetImportServiceForSelected, "Services", 166);
-            UpdateImportFileActionButtons();
-            fileButtons.Controls.Add(new Label
-            {
-                Text = "Import files: preview updates automatically after editing Environment or Service",
-                AutoSize = true,
-                Padding = new Padding(12, 7, 0, 0),
-                Font = new Font(Font, FontStyle.Bold)
-            });
-
-            var importFilesControl = importFiles.Count == 0
-                ? BuildEmptyImportPanel("No files added. Click Add Files.")
-                : BuildImportFilesGrid();
-
-            var previewButtons = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false };
-            AddCommand(previewButtons, "Select All", () => SetImportPreviewIncluded(true), "SelectAll", 108);
-            AddCommand(previewButtons, "Select None", () => SetImportPreviewIncluded(false), "SelectNone", 116);
-            AddCommand(previewButtons, "Set Env For Included", SetImportPreviewEnvironmentForIncluded, "Environments", 154);
-            AddCommand(previewButtons, "Set Service For Included", SetImportPreviewServiceForIncluded, "Services", 166);
-            AddCommand(previewButtons, "Secret On", () => SetImportPreviewSecretForIncluded(true), "Key", 110);
-            AddCommand(previewButtons, "Secret Off", () => SetImportPreviewSecretForIncluded(false), "Unlock", 110);
-            AddCommand(previewButtons, "Required On", () => SetImportPreviewRequiredForIncluded(true), "Warning", 120);
-            AddCommand(previewButtons, "Required Off", () => SetImportPreviewRequiredForIncluded(false), "Info", 120);
-            AddCommand(previewButtons, "Apply Import", ApplyImportPreview, "Apply", 124);
-            previewButtons.Controls.Add(new Label
-            {
-                Text = "Preview: edit Include, Environment, Service, Key and NewValue before applying",
-                AutoSize = true,
-                Padding = new Padding(12, 7, 0, 0),
-                Font = new Font(Font, FontStyle.Bold)
-            });
-
-            var importPreviewControl = importPreviewRows.Count == 0
-                ? BuildEmptyImportPanel("No preview yet. Add files and click Preview.")
-                : BuildImportPreviewGrid();
-
-            root.Controls.Add(fileButtons, 0, 0);
-            root.Controls.Add(importFilesControl, 0, 1);
-            root.Controls.Add(previewButtons, 0, 2);
-            root.Controls.Add(importPreviewControl, 0, 3);
-            contentPanel.Controls.Add(root);
-        }
-
-        private static Control BuildEmptyImportPanel(string text)
-        {
-            return new Panel
-            {
-                Dock = DockStyle.Fill,
-                BorderStyle = BorderStyle.FixedSingle,
-                BackColor = SystemColors.ControlLight,
-                Controls =
-                {
-                    new Label
-                    {
-                        Dock = DockStyle.Fill,
-                        Text = text,
-                        TextAlign = ContentAlignment.MiddleCenter
-                    }
-                }
-            };
-        }
-
-        private void RenderMergeVaultView()
-        {
-            var root = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 3, ColumnCount = 1, Padding = new Padding(8) };
-            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
-            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
-            root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-
-            root.Controls.Add(BuildPageHeader("Merge Vaults", "Compare external .envs vault files with the current project and choose what to import."), 0, 0);
-
-            var commands = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false };
-            AddCommand(commands, "Open Vaults", MergeVaultFilesFromUi, "Merge", 120);
-            AddCommand(commands, "Select All", () => SetMergePreviewIncluded(true), "SelectAll", 108);
-            AddCommand(commands, "Select None", () => SetMergePreviewIncluded(false), "SelectNone", 116);
-            AddCommand(commands, "Apply Merge", ApplyMergePreview, "Apply", 124);
-            root.Controls.Add(commands, 0, 1);
-
-            var preview = mergePreviewRows.Count == 0
-                ? BuildEmptyImportPanel("No merge preview. Click Open Vaults.")
-                : BuildMergePreviewGrid();
-            root.Controls.Add(preview, 0, 2);
-            contentPanel.Controls.Add(root);
-        }
-
-        private void RenderSplitVaultView()
-        {
-            var root = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 4, ColumnCount = 1, Padding = new Padding(8) };
-            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
-            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 184));
-            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
-            root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-
-            var header = BuildPageHeader("Split Vault", "Export selected variables from the current project into a separate .envs vault file with its own password.");
-            root.Controls.Add(header, 0, 0);
-
-            var form = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 3, RowCount = 6 };
-            form.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 130));
-            form.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-            form.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 110));
-            for (var i = 0; i < 6; i++) form.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
-
-            form.Controls.Add(BuildFieldLabel("Target file:"), 0, 0);
-            form.Controls.Add(new TextBox { Name = "SplitTargetBox", Dock = DockStyle.Fill }, 1, 0);
-            AddCommandCell(form, "Browse...", BrowseSplitTargetFile, "Open", 2, 0);
-
-            form.Controls.Add(BuildFieldLabel("Project name:"), 0, 1);
-            form.Controls.Add(new TextBox { Name = "SplitProjectNameBox", Dock = DockStyle.Fill, Text = (project.ProjectName ?? "project") + "-split" }, 1, 1);
-
-            form.Controls.Add(BuildFieldLabel("Selection:"), 0, 2);
-            var modeCombo = new ComboBox { Name = "SplitModeCombo", Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDownList };
-            modeCombo.Items.AddRange(new object[] { "Selected variables", "Owner service", "Scope service", "All variables" });
-            modeCombo.SelectedIndex = 0;
-            modeCombo.SelectedIndexChanged += (s, e) => UpdateSplitViewState();
-            form.Controls.Add(modeCombo, 1, 2);
-
-            form.Controls.Add(BuildFieldLabel("Service:"), 0, 3);
-            var serviceCombo = new ComboBox { Name = "SplitServiceCombo", Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDownList };
-            foreach (var service in project.Services.OrderBy(s => s.SortOrder).ThenBy(s => s.Name))
-            {
-                serviceCombo.Items.Add(new ScopeSelectorItem(service.Id, service.Name));
-            }
-            if (serviceCombo.Items.Count > 0) serviceCombo.SelectedIndex = 0;
-            form.Controls.Add(serviceCombo, 1, 3);
-
-            form.Controls.Add(BuildFieldLabel("Storage:"), 0, 4);
-            var encryptionCombo = new ComboBox { Name = "SplitEncryptionCombo", Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDownList };
-            encryptionCombo.Items.AddRange(new object[] { EncryptionOpen, EncryptionSecrets, EncryptionAllValues, EncryptionWholeJson });
-            encryptionCombo.SelectedItem = EncryptionWholeJson;
-            encryptionCombo.SelectedIndexChanged += (s, e) => UpdateSplitViewState();
-            form.Controls.Add(encryptionCombo, 1, 4);
-
-            form.Controls.Add(BuildFieldLabel("New password:"), 0, 5);
-            form.Controls.Add(new TextBox { Name = "SplitPasswordBox", Dock = DockStyle.Fill, UseSystemPasswordChar = true }, 1, 5);
-            form.Controls.Add(new CheckBox { Name = "SplitIncludeRefsBox", Text = "Include references", Checked = true, Dock = DockStyle.Fill }, 2, 5);
-            root.Controls.Add(form, 0, 1);
-
-            var commands = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false };
-            AddCommand(commands, "Create Split Vault", SplitVaultFileFromUi, "Split", 150);
-            root.Controls.Add(commands, 0, 2);
-
-            var variables = new CheckedListBox { Name = "SplitVariablesList", Dock = DockStyle.Fill, CheckOnClick = true };
-            foreach (var variable in project.Variables.OrderBy(v => v.SortOrder).ThenBy(v => v.Key))
-            {
-                variables.Items.Add(variable.Key, false);
-            }
-            root.Controls.Add(variables, 0, 3);
-            contentPanel.Controls.Add(root);
-            UpdateSplitViewState();
-        }
-
-        private void RenderVaultActionView(string title, string description, string buttonText, string imageKey, Action action)
-        {
-            var root = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 2, ColumnCount = 1, Padding = new Padding(8) };
-            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
-            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 72));
-
-            var commands = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false };
-            AddCommand(commands, buttonText, action, imageKey, 150);
-
-            root.Controls.Add(BuildPageHeader(title, description), 0, 0);
-            root.Controls.Add(commands, 0, 1);
-            contentPanel.Controls.Add(root);
-        }
-
-        private FlowLayoutPanel BuildPageHeader(string title, string description)
-        {
-            var header = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false };
-            header.Controls.Add(new Label
-            {
-                Text = title,
-                AutoSize = true,
-                Font = new Font(Font.FontFamily, 16, FontStyle.Bold),
-                Padding = new Padding(0, 4, 12, 0)
-            });
-            header.Controls.Add(new Label
-            {
-                Text = description,
-                AutoSize = true,
-                ForeColor = Color.FromArgb(80, 90, 105),
-                Padding = new Padding(0, 10, 0, 0)
-            });
-            return header;
-        }
-
-        private static Label BuildFieldLabel(string text)
-        {
-            return new Label { Text = text, Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft };
-        }
-
-        private void AddCommandCell(TableLayoutPanel table, string text, Action action, string imageKey, int column, int row)
-        {
-            var panel = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false, Margin = new Padding(4, 0, 0, 0) };
-            AddCommand(panel, text, action, imageKey, 100);
-            table.Controls.Add(panel, column, row);
-        }
-
-        private DataGridView BuildImportFilesGrid()
-        {
-            importFilesGrid = BuildEditableGrid();
-            importFilesGrid.Columns.Add(new DataGridViewCheckBoxColumn { Name = "Selected", HeaderText = "Selected", FillWeight = 45 });
-            importFilesGrid.Columns.Add("FilePath", "FilePath");
-            importFilesGrid.Columns.Add(BuildEnvironmentComboColumn());
-            importFilesGrid.Columns.Add(BuildServiceComboColumn());
-            importFilesGrid.CellEndEdit += (s, e) => RebuildImportPreviewFromGrid();
-            importFilesGrid.CellValueChanged += (s, e) =>
-            {
-                HandleImportComboAddNew(importFilesGrid, e.RowIndex, e.ColumnIndex, true);
-                SyncImportFilesFromGrid();
-                UpdateImportFileActionButtons();
-            };
-            importFilesGrid.CurrentCellDirtyStateChanged += (s, e) =>
-            {
-                if (importFilesGrid.IsCurrentCellDirty)
-                {
-                    importFilesGrid.CommitEdit(DataGridViewDataErrorContexts.Commit);
-                }
-            };
-            foreach (var file in importFiles)
-            {
-                importFilesGrid.Rows.Add(file.Selected, file.FilePath, NormalizeEnvironmentOption(file.Environment), NormalizeServiceOption(file.Service));
-            }
-            AttachColumnWidthPersistence(importFilesGrid, "ImportFiles");
-            RestoreColumnWidths(importFilesGrid, "ImportFiles");
-            return importFilesGrid;
-        }
-
-        private DataGridView BuildMergePreviewGrid()
-        {
-            mergePreviewGrid = BuildEditableGrid();
-            mergePreviewGrid.Columns.Add(new DataGridViewCheckBoxColumn { Name = "Include", HeaderText = "Include", FillWeight = 45 });
-            mergePreviewGrid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Action", HeaderText = "Action", ReadOnly = true, FillWeight = 80 });
-            mergePreviewGrid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Key", HeaderText = "Key", ReadOnly = true, FillWeight = 150 });
-            mergePreviewGrid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Scope", HeaderText = "Scope", ReadOnly = true, FillWeight = 90 });
-            mergePreviewGrid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Service", HeaderText = "Service", ReadOnly = true, FillWeight = 90 });
-            mergePreviewGrid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Environment", HeaderText = "Environment", ReadOnly = true, FillWeight = 90 });
-            mergePreviewGrid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Current", HeaderText = "Current", ReadOnly = true, FillWeight = 160 });
-            mergePreviewGrid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Incoming", HeaderText = "Incoming", ReadOnly = true, FillWeight = 160 });
-            mergePreviewGrid.Columns.Add(new DataGridViewTextBoxColumn { Name = "File", HeaderText = "File", ReadOnly = true, FillWeight = 160 });
-            mergePreviewGrid.CurrentCellDirtyStateChanged += (s, e) =>
-            {
-                if (mergePreviewGrid.IsCurrentCellDirty)
-                {
-                    mergePreviewGrid.CommitEdit(DataGridViewDataErrorContexts.Commit);
-                }
-            };
-            mergePreviewGrid.CellValueChanged += (s, e) => SyncMergePreviewFromGrid();
-            foreach (var row in mergePreviewRows)
-            {
-                mergePreviewGrid.Rows.Add(row.Include, row.Action, row.Key, row.Scope, row.Service, row.Environment, row.CurrentValue, row.IncomingValue, row.FilePath);
-            }
-            AttachColumnWidthPersistence(mergePreviewGrid, "MergePreview");
-            RestoreColumnWidths(mergePreviewGrid, "MergePreview");
-            return mergePreviewGrid;
-        }
-
-        private DataGridView BuildImportPreviewGrid()
-        {
-            importPreviewGrid = BuildEditableGrid();
-            importPreviewGrid.Columns.Add(new DataGridViewCheckBoxColumn { Name = "Include", HeaderText = "Include" });
-            importPreviewGrid.Columns.Add("Action", "Action");
-            importPreviewGrid.Columns.Add("Key", "Key");
-            importPreviewGrid.Columns.Add(new DataGridViewCheckBoxColumn { Name = "Secret", HeaderText = "Secret" });
-            importPreviewGrid.Columns.Add(new DataGridViewCheckBoxColumn { Name = "Required", HeaderText = "Required" });
-            importPreviewGrid.Columns.Add(BuildEnvironmentComboColumn());
-            importPreviewGrid.Columns.Add(BuildServiceComboColumn());
-            importPreviewGrid.Columns.Add("Scope", "Scope");
-            importPreviewGrid.Columns.Add("OldValue", "OldValue");
-            importPreviewGrid.Columns.Add("NewValue", "NewValue");
-            importPreviewGrid.Columns.Add("FilePath", "FilePath");
-            importPreviewGrid.CellValueChanged += (s, e) =>
-            {
-                if (e.RowIndex < 0 || e.ColumnIndex < 0) return;
-                var columnName = importPreviewGrid.Columns[e.ColumnIndex].Name;
-                var isAddNew = Convert.ToString(importPreviewGrid.Rows[e.RowIndex].Cells[e.ColumnIndex].Value) == AddNewOption;
-                HandleImportComboAddNew(importPreviewGrid, e.RowIndex, e.ColumnIndex, false);
-                if (isAddNew) return;
-                if (columnName == "Environment" || columnName == "Service")
-                {
-                    SyncImportPreviewFromGrid();
-                    foreach (var row in importPreviewRows)
-                    {
-                        RefreshImportPreviewRowTarget(row);
-                    }
-                    RenderCurrentView();
-                }
-            };
-            importPreviewGrid.CurrentCellDirtyStateChanged += (s, e) =>
-            {
-                if (importPreviewGrid.IsCurrentCellDirty)
-                {
-                    importPreviewGrid.CommitEdit(DataGridViewDataErrorContexts.Commit);
-                }
-            };
-            foreach (var row in importPreviewRows)
-            {
-                importPreviewGrid.Rows.Add(row.Include, row.Action, row.Key, row.Secret, row.Required, NormalizeEnvironmentOption(row.Environment), NormalizeServiceOption(row.Service), row.Scope, row.OldValue, row.NewValue, row.FilePath);
-            }
-            AttachColumnWidthPersistence(importPreviewGrid, "ImportPreview");
-            RestoreColumnWidths(importPreviewGrid, "ImportPreview");
-            return importPreviewGrid;
-        }
-
-        private DataGridViewComboBoxColumn BuildEnvironmentComboColumn()
-        {
-            var column = new DataGridViewComboBoxColumn { Name = "Environment", HeaderText = "Environment", FlatStyle = FlatStyle.Flat };
-            column.Items.Add(GlobalOption);
-            foreach (var env in project.Environments.OrderBy(e => e.SortOrder))
-            {
-                column.Items.Add(env.Name);
-            }
-            column.Items.Add(AddNewOption);
-            return column;
-        }
-
-        private DataGridViewComboBoxColumn BuildServiceComboColumn()
-        {
-            var column = new DataGridViewComboBoxColumn { Name = "Service", HeaderText = "Service", FlatStyle = FlatStyle.Flat };
-            column.Items.Add(AllServicesOption);
-            foreach (var service in project.Services.OrderBy(s => s.SortOrder))
-            {
-                column.Items.Add(service.Name);
-            }
-            column.Items.Add(AddNewOption);
-            return column;
-        }
-
-        private static DataGridView BuildEditableGrid()
-        {
-            var grid = new DataGridView
-            {
-                Dock = DockStyle.Fill,
-                ReadOnly = false,
-                AllowUserToAddRows = false,
-                AllowUserToDeleteRows = false,
-                AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill,
-                SelectionMode = DataGridViewSelectionMode.CellSelect,
-                MultiSelect = false,
-                RowHeadersVisible = false
-            };
-            grid.DataError += (s, e) => { e.ThrowException = false; };
-            grid.DataBindingComplete += (s, e) =>
-            {
-                if (grid.Rows.Count == 0)
-                {
-                    grid.ClearSelection();
-                    grid.CurrentCell = null;
-                }
-            };
-            return grid;
-        }
-
-        private void HandleImportComboAddNew(DataGridView grid, int rowIndex, int columnIndex, bool rebuildPreview)
-        {
-            if (suppressImportComboAddNew) return;
-            if (rowIndex < 0 || columnIndex < 0) return;
-            var columnName = grid.Columns[columnIndex].Name;
-            if (columnName != "Environment" && columnName != "Service") return;
-            if (Convert.ToString(grid.Rows[rowIndex].Cells[columnIndex].Value) != AddNewOption) return;
-
-            if (columnName == "Environment")
-            {
-                var name = PromptDialog.Show(this, "Add Environment", "Name:", "dev");
-                if (string.IsNullOrWhiteSpace(name))
-                {
-                    SetImportComboCellValue(grid, rowIndex, columnIndex, GlobalOption);
-                    RefreshImportAfterComboChange(rebuildPreview);
-                    return;
-                }
-
-                var id = Slug(name);
-                if (!project.Environments.Any(e => e.Id == id || string.Equals(e.Name, name, StringComparison.OrdinalIgnoreCase)))
-                {
-                    project.Environments.Add(new EnvironmentModel { Id = id, Name = id, DisplayName = name, SortOrder = project.Environments.Count * 10 });
-                    modified = true;
-                    SaveRecoveryBackupIfPossible();
-                }
-                SetImportComboCellValue(grid, rowIndex, columnIndex, id);
-            }
-            else
-            {
-                var name = PromptDialog.Show(this, "Add Service", "Name:", "backend");
-                if (string.IsNullOrWhiteSpace(name))
-                {
-                    SetImportComboCellValue(grid, rowIndex, columnIndex, AllServicesOption);
-                    RefreshImportAfterComboChange(rebuildPreview);
-                    return;
-                }
-
-                var id = Slug(name);
-                if (!project.Services.Any(s => s.Id == id || string.Equals(s.Name, name, StringComparison.OrdinalIgnoreCase)))
-                {
-                    var prefix = PromptDialog.Show(this, "Add Service", "Default prefix:", id.ToUpperInvariant() + "_");
-                    if (prefix == null)
-                    {
-                        SetImportComboCellValue(grid, rowIndex, columnIndex, AllServicesOption);
-                        RefreshImportAfterComboChange(rebuildPreview);
-                        return;
-                    }
-                    project.Services.Add(new ServiceModel { Id = id, Name = id, DisplayName = name, OutputFolder = id, DefaultPrefix = prefix, SortOrder = project.Services.Count * 10 });
-                    AutoAssignVariablesToService(project.Services.Last());
-                    modified = true;
-                    SaveRecoveryBackupIfPossible();
-                }
-                SetImportComboCellValue(grid, rowIndex, columnIndex, id);
-            }
-
-            RefreshImportAfterComboChange(rebuildPreview);
-        }
-
-        private void SetImportComboCellValue(DataGridView grid, int rowIndex, int columnIndex, string value)
-        {
-            suppressImportComboAddNew = true;
-            try
-            {
-                grid.Rows[rowIndex].Cells[columnIndex].Value = value;
-                grid.EndEdit();
-            }
-            finally
-            {
-                suppressImportComboAddNew = false;
-            }
-        }
-
-        private void RefreshImportAfterComboChange(bool rebuildPreview)
-        {
-            if (rebuildPreview)
-            {
-                RebuildImportPreviewFromGrid();
-            }
-            else
-            {
-                SyncImportPreviewFromGrid();
-                foreach (var row in importPreviewRows)
-                {
-                    RefreshImportPreviewRowTarget(row);
-                }
-                RenderCurrentView();
-            }
-        }
-
-        private void AddImportFiles()
-        {
-            using (var dialog = new OpenFileDialog
-            {
-                Filter = "Config files (*.env;*.config;*.txt)|*.env;*.config;*.txt|All files (*.*)|*.*",
-                Multiselect = true
-            })
-            {
-                if (dialog.ShowDialog(this) != DialogResult.OK) return;
-                foreach (var path in dialog.FileNames)
-                {
-                    if (importFiles.Any(f => string.Equals(f.FilePath, path, StringComparison.OrdinalIgnoreCase))) continue;
-                    importFiles.Add(new ImportFileRow
-                    {
-                    FilePath = path,
-                    Selected = false,
-                    Environment = NormalizeEnvironmentOption(InferEnvironmentName(path)),
-                    Service = NormalizeServiceOption(InferServiceName(path))
-                });
-            }
-            }
-            BuildImportPreviewRows();
-            RenderCurrentView();
-        }
-
-        private void MergeVaultFilesFromUi()
-        {
-            using (var dialog = new OpenFileDialog
-            {
-                Filter = "EnvSecured Studio vault (*.envs)|*.envs|All files (*.*)|*.*",
-                Multiselect = true
-            })
-            {
-                if (dialog.ShowDialog(this) != DialogResult.OK) return;
-
-                var loaded = new List<MergeVaultSource>();
-                mergePreviewRows.Clear();
-                for (var i = 0; i < dialog.FileNames.Length; i++)
-                {
-                    var path = dialog.FileNames[i];
-                    try
-                    {
-                        var source = LoadVaultFileWithIsolatedKey(path);
-                        if (source == null) return;
-                        loaded.Add(new MergeVaultSource
-                        {
-                            Index = i,
-                            Path = path,
-                            Label = Path.GetFileName(path),
-                            Project = source
-                        });
-                    }
-                    catch (Exception ex)
-                    {
-                        MessageBox.Show(this, "Could not open vault file.\r\n\r\n" + path + "\r\n\r\n" + ex.Message, "Merge Vaults", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                        return;
-                    }
-                }
-
-                using (var wizard = new MergeVaultWizardForm(project, loaded))
-                {
-                    if (wizard.ShowDialog(this) != DialogResult.OK) return;
-                    var mappedSources = wizard.BuildMappedSources();
-                    for (var i = 0; i < mappedSources.Count; i++)
-                    {
-                        AddMergePreviewRows(mappedSources[i], loaded[i].Path);
-                    }
-                }
-
-                RenderCurrentView();
-                if (mergePreviewRows.Count == 0)
-                {
-                    MessageBox.Show(this, "No differences found.", "Merge Vaults", MessageBoxButtons.OK, MessageBoxIcon.Information);
-                }
-            }
-        }
-
-        private void AddMergePreviewRows(ProjectModel source, string path)
-        {
-            ProjectService.EnsureProjectCollections(source);
-            foreach (var sourceVariable in source.Variables.OrderBy(v => v.SortOrder).ThenBy(v => v.Key))
-            {
-                var targetVariable = project.Variables.FirstOrDefault(v => string.Equals(v.Key, sourceVariable.Key, StringComparison.OrdinalIgnoreCase));
-                var values = source.Values.Where(v => v.VariableId == sourceVariable.Id).ToList();
-                if (targetVariable == null && values.Count == 0)
-                {
-                    mergePreviewRows.Add(new MergePreviewRow
-                    {
-                        Include = true,
-                        Action = "Add variable",
-                        Key = sourceVariable.Key,
-                        CurrentValue = "-",
-                        IncomingValue = OwnerDisplayName(source, sourceVariable),
-                        FilePath = path,
-                        SourceProject = source,
-                        SourceVariableId = sourceVariable.Id
-                    });
-                    continue;
-                }
-
-                foreach (var sourceValue in values)
-                {
-                    var mappedService = FindMatchingService(project, source, sourceValue.ServiceId);
-                    var mappedEnvironment = FindMatchingEnvironment(project, source, sourceValue.EnvironmentId);
-                    var targetValue = targetVariable == null
-                        ? null
-                        : project.Values.LastOrDefault(v =>
-                            v.VariableId == targetVariable.Id &&
-                            v.Scope == sourceValue.Scope &&
-                            SameNullable(v.ServiceId, mappedService?.Id) &&
-                            SameNullable(v.EnvironmentId, mappedEnvironment?.Id));
-                    if (targetVariable != null && targetValue != null && string.Equals(targetValue.Value ?? string.Empty, sourceValue.Value ?? string.Empty, StringComparison.Ordinal))
-                    {
-                        continue;
-                    }
-
-                    mergePreviewRows.Add(new MergePreviewRow
-                    {
-                        Include = true,
-                        Action = targetVariable == null ? "Add variable value" : targetValue == null ? "Add value" : "Update value",
-                        Key = sourceVariable.Key,
-                        Scope = sourceValue.Scope.ToString(),
-                        Service = ServiceName(source, sourceValue.ServiceId),
-                        Environment = EnvironmentName(source, sourceValue.EnvironmentId),
-                        CurrentValue = targetValue?.Value ?? "-",
-                        IncomingValue = sourceValue.Value ?? string.Empty,
-                        FilePath = path,
-                        SourceProject = source,
-                        SourceVariableId = sourceVariable.Id,
-                        SourceValueId = sourceValue.Id
-                    });
-                }
-            }
-        }
-
-        private static ServiceModel FindMatchingService(ProjectModel target, ProjectModel source, string sourceServiceId)
-        {
-            if (string.IsNullOrWhiteSpace(sourceServiceId)) return null;
-            var sourceService = source.Services.FirstOrDefault(s => string.Equals(s.Id, sourceServiceId, StringComparison.Ordinal));
-            return target.Services.FirstOrDefault(s =>
-                string.Equals(s.Id, sourceServiceId, StringComparison.OrdinalIgnoreCase) ||
-                (sourceService != null && string.Equals(s.Name, sourceService.Name, StringComparison.OrdinalIgnoreCase)));
-        }
-
-        private static EnvironmentModel FindMatchingEnvironment(ProjectModel target, ProjectModel source, string sourceEnvironmentId)
-        {
-            if (string.IsNullOrWhiteSpace(sourceEnvironmentId)) return null;
-            var sourceEnvironment = source.Environments.FirstOrDefault(e => string.Equals(e.Id, sourceEnvironmentId, StringComparison.Ordinal));
-            return target.Environments.FirstOrDefault(e =>
-                string.Equals(e.Id, sourceEnvironmentId, StringComparison.OrdinalIgnoreCase) ||
-                (sourceEnvironment != null && string.Equals(e.Name, sourceEnvironment.Name, StringComparison.OrdinalIgnoreCase)));
-        }
-
-        private static string OwnerDisplayName(ProjectModel source, VariableDefinitionModel variable)
-        {
-            if (variable == null || string.IsNullOrWhiteSpace(variable.OwnerServiceId)) return "(none)";
-            return source.Services.FirstOrDefault(s => s.Id == variable.OwnerServiceId)?.Name ?? variable.OwnerServiceId;
-        }
-
-        private static string ServiceName(ProjectModel source, string serviceId)
-        {
-            if (string.IsNullOrWhiteSpace(serviceId)) return string.Empty;
-            return source.Services.FirstOrDefault(s => s.Id == serviceId)?.Name ?? serviceId;
-        }
-
-        private static string EnvironmentName(ProjectModel source, string environmentId)
-        {
-            if (string.IsNullOrWhiteSpace(environmentId)) return string.Empty;
-            return source.Environments.FirstOrDefault(e => e.Id == environmentId)?.Name ?? environmentId;
-        }
-
-        private void SyncMergePreviewFromGrid()
-        {
-            if (mergePreviewGrid == null) return;
-            mergePreviewGrid.EndEdit();
-            for (var i = 0; i < mergePreviewGrid.Rows.Count && i < mergePreviewRows.Count; i++)
-            {
-                mergePreviewRows[i].Include = Convert.ToBoolean(mergePreviewGrid.Rows[i].Cells["Include"].Value ?? false);
-            }
-        }
-
-        private void SetMergePreviewIncluded(bool included)
-        {
-            SyncMergePreviewFromGrid();
-            foreach (var row in mergePreviewRows)
-            {
-                row.Include = included;
-            }
-            RenderCurrentView();
-        }
-
-        private void ApplyMergePreview()
-        {
-            SyncMergePreviewFromGrid();
-            var selected = mergePreviewRows.Where(r => r.Include).ToList();
-            if (selected.Count == 0)
-            {
-                MessageBox.Show(this, "No merge rows selected.", "Merge Vaults", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                return;
-            }
-
-            var sources = new List<ProjectModel>();
-            foreach (var group in selected.GroupBy(r => r.SourceProject))
-            {
-                var temp = CloneProject(group.Key);
-                var variableIds = new HashSet<string>(group.Select(r => r.SourceVariableId).Where(id => !string.IsNullOrWhiteSpace(id)));
-                var valueIds = new HashSet<string>(group.Select(r => r.SourceValueId).Where(id => !string.IsNullOrWhiteSpace(id)));
-                temp.Variables = temp.Variables.Where(v => variableIds.Contains(v.Id)).ToList();
-                temp.Contracts = temp.Contracts.Where(c => variableIds.Contains(c.VariableId)).ToList();
-                temp.Values = temp.Values.Where(v => valueIds.Contains(v.Id)).ToList();
-                sources.Add(temp);
-            }
-
-            var result = vaultTransformService.Merge(project, sources, true);
-            modified = true;
-            SaveRecoveryBackupIfPossible();
-            mergePreviewRows.Clear();
-            RenderCurrentView();
-            MessageBox.Show(this,
-                "Merged selected rows." + Environment.NewLine +
-                "Variables added: " + result.VariablesAdded + Environment.NewLine +
-                "Variables matched: " + result.VariablesMatched + Environment.NewLine +
-                "Values merged: " + result.ValuesMerged,
-                "Merge Vaults",
-                MessageBoxButtons.OK,
-                MessageBoxIcon.Information);
-        }
-
-        private void SplitVaultFileFromUi()
-        {
-            var targetBox = contentPanel.Controls.Find("SplitTargetBox", true).FirstOrDefault() as TextBox;
-            var nameBox = contentPanel.Controls.Find("SplitProjectNameBox", true).FirstOrDefault() as TextBox;
-            var modeCombo = contentPanel.Controls.Find("SplitModeCombo", true).FirstOrDefault() as ComboBox;
-            var serviceCombo = contentPanel.Controls.Find("SplitServiceCombo", true).FirstOrDefault() as ComboBox;
-            var encryptionCombo = contentPanel.Controls.Find("SplitEncryptionCombo", true).FirstOrDefault() as ComboBox;
-            var passwordBox = contentPanel.Controls.Find("SplitPasswordBox", true).FirstOrDefault() as TextBox;
-            var includeRefsBox = contentPanel.Controls.Find("SplitIncludeRefsBox", true).FirstOrDefault() as CheckBox;
-            var variablesList = contentPanel.Controls.Find("SplitVariablesList", true).FirstOrDefault() as CheckedListBox;
-
-            var targetPath = targetBox?.Text?.Trim();
-            var encryptionMode = SplitEncryptionMode(encryptionCombo);
-            if (string.IsNullOrWhiteSpace(targetPath))
-            {
-                MessageBox.Show(this, "Target file is required.", "Split Vault", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                return;
-            }
-            if (!string.Equals(encryptionMode, "Open", StringComparison.OrdinalIgnoreCase) && string.IsNullOrEmpty(passwordBox?.Text))
-            {
-                MessageBox.Show(this, "New password is required for encrypted vault files.", "Split Vault", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                return;
-            }
-            if (File.Exists(targetPath) &&
-                MessageBox.Show(this, "Target file exists. Replace it?", "Split Vault", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes)
-            {
-                return;
-            }
-
-            var mode = modeCombo?.SelectedIndex ?? 0;
-            var serviceId = (serviceCombo?.SelectedItem as ScopeSelectorItem)?.Id;
-            var options = new ProjectSplitOptions
-            {
-                All = mode == 3,
-                IncludeReferences = includeRefsBox?.Checked == true,
-                ProjectName = nameBox?.Text?.Trim()
-            };
-            if (mode == 0)
-            {
-                options.Keys.AddRange(variablesList?.CheckedItems.Cast<string>() ?? Enumerable.Empty<string>());
-                if (options.Keys.Count == 0)
-                {
-                    MessageBox.Show(this, "Select at least one variable.", "Split Vault", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                    return;
-                }
-            }
-            else if (mode == 1)
-            {
-                if (string.IsNullOrWhiteSpace(serviceId))
-                {
-                    MessageBox.Show(this, "Service is required.", "Split Vault", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                    return;
-                }
-                options.OwnerServiceIds.Add(serviceId);
-            }
-            else if (mode == 2)
-            {
-                if (string.IsNullOrWhiteSpace(serviceId))
-                {
-                    MessageBox.Show(this, "Service is required.", "Split Vault", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                    return;
-                }
-                options.ScopeServiceIds.Add(serviceId);
-            }
-
-            ProjectModel split;
-            try
-            {
-                split = vaultTransformService.Split(project, options);
-                split.Settings = split.Settings ?? new ProjectSettings();
-                split.Settings.EncryptionMode = encryptionMode;
-                split.Settings.EncryptAllValues = string.Equals(encryptionMode, "AllValues", StringComparison.OrdinalIgnoreCase);
-            }
-            catch (Exception ex)
-            {
-                MessageBox.Show(this, ex.Message, "Split Vault", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                return;
-            }
-
-            if (!SaveSplitVaultFile(split, targetPath, passwordBox?.Text))
-            {
-                return;
-            }
-
-            MessageBox.Show(this, "Split " + split.Variables.Count + " variable(s) into:" + Environment.NewLine + targetPath, "Split Vault", MessageBoxButtons.OK, MessageBoxIcon.Information);
-        }
-
-        private void BrowseSplitTargetFile()
-        {
-            var targetBox = contentPanel.Controls.Find("SplitTargetBox", true).FirstOrDefault() as TextBox;
-            using (var dialog = new SaveFileDialog
-            {
-                Filter = "EnvSecured Studio vault (*.envs)|*.envs|All files (*.*)|*.*",
-                FileName = "split.envs",
-                DefaultExt = "envs",
-                AddExtension = true
-            })
-            {
-                if (dialog.ShowDialog(this) == DialogResult.OK && targetBox != null)
-                {
-                    targetBox.Text = dialog.FileName;
-                }
-            }
-        }
-
-        private void UpdateSplitViewState()
-        {
-            var modeCombo = contentPanel.Controls.Find("SplitModeCombo", true).FirstOrDefault() as ComboBox;
-            var serviceCombo = contentPanel.Controls.Find("SplitServiceCombo", true).FirstOrDefault() as ComboBox;
-            var encryptionCombo = contentPanel.Controls.Find("SplitEncryptionCombo", true).FirstOrDefault() as ComboBox;
-            var passwordBox = contentPanel.Controls.Find("SplitPasswordBox", true).FirstOrDefault() as TextBox;
-            var variablesList = contentPanel.Controls.Find("SplitVariablesList", true).FirstOrDefault() as CheckedListBox;
-            var mode = modeCombo?.SelectedIndex ?? 0;
-            if (variablesList != null) variablesList.Enabled = mode == 0;
-            if (serviceCombo != null) serviceCombo.Enabled = mode == 1 || mode == 2;
-            if (passwordBox != null) passwordBox.Enabled = !string.Equals(SplitEncryptionMode(encryptionCombo), "Open", StringComparison.OrdinalIgnoreCase);
-        }
-
-        private static string SplitEncryptionMode(ComboBox comboBox)
-        {
-            var label = Convert.ToString(comboBox?.SelectedItem);
-            if (string.Equals(label, EncryptionWholeJson, StringComparison.OrdinalIgnoreCase)) return "WholeJson";
-            if (string.Equals(label, EncryptionAllValues, StringComparison.OrdinalIgnoreCase)) return "AllValues";
-            if (string.Equals(label, EncryptionSecrets, StringComparison.OrdinalIgnoreCase)) return "SecretsOnly";
-            return "Open";
-        }
-
-        private ProjectModel LoadVaultFileWithIsolatedKey(string path)
-        {
-            var previousKey = vaultKey == null ? null : (byte[])vaultKey.Clone();
-            try
-            {
-                return LoadVaultFile(path, false);
-            }
-            finally
-            {
-                ClearVaultKey();
-                if (previousKey != null)
-                {
-                    SetVaultKey(previousKey);
-                }
-            }
-        }
-
-        private void SyncImportFilesFromGrid()
-        {
-            if (importFilesGrid == null) return;
-            importFilesGrid.EndEdit();
-            importFiles.Clear();
-            foreach (DataGridViewRow row in importFilesGrid.Rows)
-            {
-                var path = Convert.ToString(row.Cells["FilePath"].Value);
-                if (string.IsNullOrWhiteSpace(path)) continue;
-                importFiles.Add(new ImportFileRow
-                {
-                    Selected = Convert.ToBoolean(row.Cells["Selected"].Value ?? false),
-                    FilePath = path,
-                    Environment = NormalizeEnvironmentOption(Convert.ToString(row.Cells["Environment"].Value)),
-                    Service = NormalizeServiceOption(Convert.ToString(row.Cells["Service"].Value))
-                });
-            }
-        }
-
-        private void SetImportEnvironmentForSelected()
-        {
-            SyncImportFilesFromGrid();
-            var value = ChooseEnvironmentOption();
-            if (value == null) return;
-            foreach (var file in importFiles.Where(f => f.Selected))
-            {
-                file.Environment = value;
-            }
-            BuildImportPreviewRows();
-            RenderCurrentView();
-        }
-
-        private void SetImportServiceForSelected()
-        {
-            SyncImportFilesFromGrid();
-            var value = ChooseServiceOption();
-            if (value == null) return;
-            foreach (var file in importFiles.Where(f => f.Selected))
-            {
-                file.Service = value;
-            }
-            BuildImportPreviewRows();
-            RenderCurrentView();
-        }
-
-        private void UpdateImportFileActionButtons()
-        {
-            var hasSelected = importFiles.Any(f => f.Selected);
-            if (removeImportFilesButton != null) removeImportFilesButton.Enabled = hasSelected;
-            if (setImportEnvironmentButton != null) setImportEnvironmentButton.Enabled = hasSelected;
-            if (setImportServiceButton != null) setImportServiceButton.Enabled = hasSelected;
-        }
-
-        private void SetImportFilesSelected(bool selected)
-        {
-            SyncImportFilesFromGrid();
-            foreach (var file in importFiles)
-            {
-                file.Selected = selected;
-            }
-            RenderCurrentView();
-        }
-
-        private void SetVariableEnvironmentFilter()
-        {
-            if (environmentCombo == null) return;
-            var value = ChooseEnvironmentOption();
-            if (value == null) return;
-            SelectComboByName(environmentCombo, NormalizeEnvironmentOption(value));
-            RefreshVariableGrid();
-        }
-
-        private void SetVariableServiceFilter()
-        {
-            if (scopeFilterCombo == null) return;
-            var value = ChooseServiceOption();
-            if (value == null) return;
-            SelectComboByName(scopeFilterCombo, NormalizeServiceOption(value));
-            RefreshVariableGrid();
-        }
-
-        private static void SelectComboByName(ComboBox comboBox, string name)
-        {
-            for (var i = 0; i < comboBox.Items.Count; i++)
-            {
-                var item = comboBox.Items[i];
-                var itemName = item.GetType().GetProperty("Name")?.GetValue(item, null)?.ToString() ?? item.ToString();
-                if (string.Equals(itemName, name, StringComparison.OrdinalIgnoreCase))
-                {
-                    comboBox.SelectedIndex = i;
-                    return;
-                }
-            }
-        }
-
-        private string ChooseEnvironmentOption()
-        {
-            using (var dialog = new OptionPickerForm("Set Environment", new[] { GlobalOption }.Concat(project.Environments.OrderBy(e => e.SortOrder).Select(e => e.Name)).Concat(new[] { AddNewOption }).ToArray()))
-            {
-                if (dialog.ShowDialog(this) != DialogResult.OK) return null;
-                if (dialog.SelectedValue == AddNewOption)
-                {
-                    var name = PromptDialog.Show(this, "Add Environment", "Name:", "dev");
-                    if (string.IsNullOrWhiteSpace(name)) return null;
-                    var id = Slug(name);
-                    if (!project.Environments.Any(e => e.Id == id || string.Equals(e.Name, name, StringComparison.OrdinalIgnoreCase)))
-                    {
-                        project.Environments.Add(new EnvironmentModel { Id = id, Name = id, DisplayName = name, SortOrder = project.Environments.Count * 10 });
-                        modified = true;
-                        SaveRecoveryBackupIfPossible();
-                    }
-                    return id;
-                }
-                return dialog.SelectedValue;
-            }
-        }
-
-        private string ChooseServiceOption()
-        {
-            using (var dialog = new OptionPickerForm("Set Service", new[] { AllServicesOption }.Concat(project.Services.OrderBy(s => s.SortOrder).Select(s => s.Name)).Concat(new[] { AddNewOption }).ToArray()))
-            {
-                if (dialog.ShowDialog(this) != DialogResult.OK) return null;
-                if (dialog.SelectedValue == AddNewOption)
-                {
-                    var name = PromptDialog.Show(this, "Add Service", "Name:", "backend");
-                    if (string.IsNullOrWhiteSpace(name)) return null;
-                    var id = Slug(name);
-                    if (!project.Services.Any(s => s.Id == id || string.Equals(s.Name, name, StringComparison.OrdinalIgnoreCase)))
-                    {
-                        var prefix = PromptDialog.Show(this, "Add Service", "Default prefix:", id.ToUpperInvariant() + "_");
-                        project.Services.Add(new ServiceModel { Id = id, Name = id, DisplayName = name, OutputFolder = id, DefaultPrefix = prefix, SortOrder = project.Services.Count * 10 });
-                        AutoAssignVariablesToService(project.Services.Last());
-                        modified = true;
-                        SaveRecoveryBackupIfPossible();
-                    }
-                    return id;
-                }
-                return dialog.SelectedValue;
-            }
-        }
-
-        private void SyncImportPreviewFromGrid()
-        {
-            if (importPreviewGrid == null) return;
-            importPreviewGrid.EndEdit();
-            importPreviewRows.Clear();
-            foreach (DataGridViewRow row in importPreviewGrid.Rows)
-            {
-                importPreviewRows.Add(new ImportPreviewRow
-                {
-                    Include = Convert.ToBoolean(row.Cells["Include"].Value ?? false),
-                    Action = Convert.ToString(row.Cells["Action"].Value),
-                    Key = Convert.ToString(row.Cells["Key"].Value),
-                    Secret = Convert.ToBoolean(row.Cells["Secret"].Value ?? false),
-                    Required = Convert.ToBoolean(row.Cells["Required"].Value ?? false),
-                    Environment = NormalizeEnvironmentOption(Convert.ToString(row.Cells["Environment"].Value)),
-                    Service = NormalizeServiceOption(Convert.ToString(row.Cells["Service"].Value)),
-                    Scope = Convert.ToString(row.Cells["Scope"].Value),
-                    OldValue = Convert.ToString(row.Cells["OldValue"].Value),
-                    NewValue = Convert.ToString(row.Cells["NewValue"].Value),
-                    FilePath = Convert.ToString(row.Cells["FilePath"].Value)
-                });
-            }
-        }
-
-        private void RemoveImportFile()
-        {
-            SyncImportFilesFromGrid();
-            importFiles.RemoveAll(f => f.Selected);
-            BuildImportPreviewRows();
-            RenderCurrentView();
-        }
-
-        private void RebuildImportPreviewFromGrid()
-        {
-            SyncImportFilesFromGrid();
-            BuildImportPreviewRows();
-            RenderCurrentView();
-        }
-
-        private void BuildImportPreviewRows()
-        {
-            importPreviewRows.Clear();
-            foreach (var file in importFiles.ToList())
-            {
-                foreach (var pair in ParseConfigFile(file.FilePath))
-                {
-                    var target = ResolveImportTarget(file.Environment, file.Service);
-                    var variable = project.Variables.FirstOrDefault(v => string.Equals(v.Key, pair.Key, StringComparison.OrdinalIgnoreCase));
-                    var contract = target.ServiceId == null || variable == null
-                        ? null
-                        : project.Contracts.FirstOrDefault(c => c.VariableId == variable.Id && c.ServiceId == target.ServiceId);
-                    var oldValue = FindRawValue(pair.Key, target.Scope, target.EnvironmentId, target.ServiceId);
-                    importPreviewRows.Add(new ImportPreviewRow
-                    {
-                        Include = oldValue != pair.Value,
-                        FilePath = file.FilePath,
-                        Environment = file.Environment,
-                        Service = file.Service,
-                        Scope = target.Scope.ToString(),
-                        Key = pair.Key,
-                        Secret = variable?.IsSecret ?? IsSecretImportKey(pair.Key),
-                        Required = contract?.Required ?? true,
-                        OldValue = oldValue,
-                        NewValue = pair.Value,
-                        Action = oldValue == null ? "Add" : oldValue == pair.Value ? "No change" : "Overwrite"
-                    });
-                }
-            }
-        }
-
-        private void SetImportPreviewIncluded(bool included)
-        {
-            SyncImportPreviewFromGrid();
-            foreach (var row in importPreviewRows)
-            {
-                row.Include = included;
-            }
-            RenderCurrentView();
-        }
-
-        private void SetImportPreviewEnvironmentForIncluded()
-        {
-            SyncImportPreviewFromGrid();
-            var value = ChooseEnvironmentOption();
-            if (value == null) return;
-            foreach (var row in importPreviewRows.Where(r => r.Include))
-            {
-                row.Environment = value;
-                RefreshImportPreviewRowTarget(row);
-            }
-            RenderCurrentView();
-        }
-
-        private void SetImportPreviewServiceForIncluded()
-        {
-            SyncImportPreviewFromGrid();
-            var value = ChooseServiceOption();
-            if (value == null) return;
-            foreach (var row in importPreviewRows.Where(r => r.Include))
-            {
-                row.Service = value;
-                RefreshImportPreviewRowTarget(row);
-            }
-            RenderCurrentView();
-        }
-
-        private void SetImportPreviewSecretForIncluded(bool secret)
-        {
-            SyncImportPreviewFromGrid();
-            foreach (var row in importPreviewRows.Where(r => r.Include))
-            {
-                row.Secret = secret;
-            }
-            RenderCurrentView();
-        }
-
-        private void SetImportPreviewRequiredForIncluded(bool required)
-        {
-            SyncImportPreviewFromGrid();
-            foreach (var row in importPreviewRows.Where(r => r.Include))
-            {
-                row.Required = required;
-            }
-            RenderCurrentView();
-        }
-
-        private void RefreshImportPreviewRowTarget(ImportPreviewRow row)
-        {
-            var target = ResolveImportTarget(row.Environment, row.Service);
-            row.Scope = target.Scope.ToString();
-            row.OldValue = FindRawValue(row.Key, target.Scope, target.EnvironmentId, target.ServiceId);
-            row.Action = row.OldValue == null ? "Add" : row.OldValue == row.NewValue ? "No change" : "Overwrite";
-        }
-
-        private void ApplyImportPreview()
-        {
-            SyncImportPreviewFromGrid();
-            var applied = 0;
-            foreach (var row in importPreviewRows.Where(r => r.Include).ToList())
-            {
-                var target = ResolveImportTarget(row.Environment, row.Service);
-                var variable = project.Variables.FirstOrDefault(v => string.Equals(v.Key, row.Key, StringComparison.OrdinalIgnoreCase));
-                if (variable == null)
-                {
-                    if (string.IsNullOrWhiteSpace(target.ServiceId))
-                    {
-                        MessageBox.Show(this, $"New variable {row.Key} requires a service owner. Set Service before applying import.", "Import", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                        return;
-                    }
-                    variable = new VariableDefinitionModel
-                    {
-                        Id = UniqueVariableId(row.Key),
-                        Key = row.Key.Trim().ToUpperInvariant(),
-                        DisplayName = row.Key.Trim(),
-                        Type = row.Secret ? VariableType.Password : VariableType.String,
-                        IsSecret = row.Secret,
-                        OwnerServiceId = target.ServiceId,
-                        SortOrder = project.Variables.Count * 10
-                    };
-                    project.Variables.Add(variable);
-                }
-                else
-                {
-                    if (string.IsNullOrWhiteSpace(variable.OwnerServiceId))
-                    {
-                        variable.OwnerServiceId = target.ServiceId;
-                    }
-                    variable.IsSecret = row.Secret;
-                    variable.Type = row.Secret ? VariableType.Password : VariableType.String;
-                }
-
-                var existing = project.Values.LastOrDefault(v =>
-                    v.VariableId == variable.Id &&
-                    v.Scope == target.Scope &&
-                    v.EnvironmentId == target.EnvironmentId &&
-                    v.ServiceId == target.ServiceId);
-
-                if (existing == null)
-                {
-                    project.Values.Add(new VariableValueModel
-                    {
-                        Id = ProjectService.NewId(),
-                        VariableId = variable.Id,
-                        Scope = target.Scope,
-                        EnvironmentId = target.EnvironmentId,
-                        ServiceId = target.ServiceId,
-                        Value = row.NewValue,
-                        IsEncrypted = row.Secret,
-                        UpdatedAtUtc = DateTime.UtcNow
-                    });
-                }
-                else
-                {
-                    existing.Value = row.NewValue;
-                    existing.IsEncrypted = row.Secret;
-                    existing.UpdatedAtUtc = DateTime.UtcNow;
-                }
-
-                if (target.ServiceId != null)
-                {
-                    var export = true;
-                    var allowOverride = true;
-                    var contract = ProjectService.EnsureServiceScopeContract(project, variable.Id, target.ServiceId, export, true, allowOverride);
-                    contract.Required = row.Required;
-                }
-                applied++;
-            }
-
-            modified = true;
-            SaveRecoveryBackupIfPossible();
-            MessageBox.Show(this, $"Imported {applied} value(s).", "Import");
-            importFiles.Clear();
-            importPreviewRows.Clear();
-            currentView = "Variables";
-            RenderCurrentView();
-        }
-
-        private void BuildScopeMatrix()
-        {
-            scopeMatrix.Columns.Clear();
-            scopeMatrix.Rows.Clear();
-            scopeMatrix.Columns.Add(new DataGridViewTextBoxColumn { Name = "VariableId", HeaderText = "VariableId", Visible = false });
-            scopeMatrix.Columns.Add(new DataGridViewTextBoxColumn { Name = "Owner", HeaderText = "Owner", ReadOnly = true, FillWeight = 80 });
-            scopeMatrix.Columns.Add(new DataGridViewTextBoxColumn { Name = "Variable", HeaderText = "Variable", ReadOnly = true, FillWeight = 160 });
-
-            var services = project.Services.OrderBy(s => s.SortOrder).ThenBy(s => s.Name).ToList();
-            foreach (var service in services)
-            {
-                var column = new DataGridViewComboBoxColumn
-                {
-                    Name = "svc_" + service.Id,
-                    HeaderText = service.Name,
-                    Tag = service.Id,
-                    FillWeight = 80,
-                    FlatStyle = FlatStyle.Flat
-                };
-                column.Items.AddRange(ScopeModes.Cast<object>().ToArray());
-                scopeMatrix.Columns.Add(column);
-            }
-
-            var serviceById = services.ToDictionary(s => s.Id, s => s.Name);
-            var variables = project.Variables
-                .OrderBy(v => OwnerSortOrder(v.OwnerServiceId))
-                .ThenBy(v => OwnerDisplayName(v.OwnerServiceId, serviceById))
-                .ThenBy(v => v.GroupName)
-                .ThenBy(v => v.SortOrder)
-                .ThenBy(v => v.Key);
-
-            foreach (var variable in variables)
-            {
-                var rowIndex = scopeMatrix.Rows.Add();
-                var row = scopeMatrix.Rows[rowIndex];
-                row.Cells["VariableId"].Value = variable.Id;
-                row.Cells["Owner"].Value = OwnerDisplayName(variable.OwnerServiceId, serviceById);
-                row.Cells["Variable"].Value = variable.Key;
-                foreach (var service in services)
-                {
-                    var isOwner = string.Equals(variable.OwnerServiceId, service.Id, StringComparison.Ordinal);
-                    var mode = isOwner ? "---" : ScopeModeFromState(variable, service.Id);
-                    var cell = row.Cells["svc_" + service.Id];
-                    if (isOwner)
-                    {
-                        cell = new DataGridViewTextBoxCell();
-                        row.Cells["svc_" + service.Id] = cell;
-                        cell.ReadOnly = true;
-                    }
-                    cell.Value = mode;
-                    ApplyScopeModeCellStyle(cell, mode);
-                }
-            }
-        }
-
-        private void ApplyScopeMatrix()
-        {
-            if (scopeMatrix == null) return;
-            foreach (DataGridViewRow row in scopeMatrix.Rows)
-            {
-                var variableId = Convert.ToString(row.Cells["VariableId"].Value);
-                var variable = project.Variables.FirstOrDefault(v => v.Id == variableId);
-                if (variable == null) continue;
-
-                foreach (DataGridViewColumn column in scopeMatrix.Columns)
-                {
-                    if (!(column is DataGridViewComboBoxColumn)) continue;
-                    var serviceId = Convert.ToString(column.Tag);
-                    var mode = Convert.ToString(row.Cells[column.Name].Value);
-                    if (string.Equals(variable.OwnerServiceId, serviceId, StringComparison.Ordinal))
-                    {
-                        continue;
-                    }
-
-                    ParseScopeMode(mode, out var visible, out var allowOverride, out var export);
-
-                    if (!visible && !export && !allowOverride)
-                    {
-                        project.Contracts.RemoveAll(c => c.VariableId == variable.Id && c.ServiceId == serviceId);
-                    }
-                    else
-                    {
-                        ProjectService.EnsureServiceScopeContract(project, variable.Id, serviceId, export, visible, allowOverride);
-                    }
-                }
-            }
-
-            Changed();
-            BuildScopeMatrix();
-        }
-
-        private string ScopeModeFromState(VariableDefinitionModel variable, string serviceId)
-        {
-            var visible = ProjectService.IsVariableVisibleToService(project, variable, serviceId);
-            if (!visible) return ScopeModeNone;
-
-            var allowOverride = ProjectService.CanOverrideVariableForService(project, variable, serviceId);
-            var export = IsVariableUsedByService(variable.Id, serviceId);
-            if (allowOverride && export) return ScopeModeFull;
-            if (allowOverride) return ScopeModeOverride;
-            if (export) return ScopeModeExport;
-            return ScopeModeRead;
-        }
-
-        private static void ParseScopeMode(string mode, out bool visible, out bool allowOverride, out bool export)
-        {
-            visible = false;
-            allowOverride = false;
-            export = false;
-
-            if (string.Equals(mode, ScopeModeRead, StringComparison.OrdinalIgnoreCase))
-            {
-                visible = true;
-            }
-            else if (string.Equals(mode, ScopeModeOverride, StringComparison.OrdinalIgnoreCase))
-            {
-                visible = true;
-                allowOverride = true;
-            }
-            else if (string.Equals(mode, ScopeModeExport, StringComparison.OrdinalIgnoreCase))
-            {
-                visible = true;
-                export = true;
-            }
-            else if (string.Equals(mode, ScopeModeFull, StringComparison.OrdinalIgnoreCase))
-            {
-                visible = true;
-                allowOverride = true;
-                export = true;
-            }
-        }
-
-        private static void ApplyScopeModeCellStyle(DataGridViewCell cell, string mode)
-        {
-            if (cell == null) return;
-            cell.Style.BackColor = ScopeModeBackColor(mode);
-            cell.Style.ForeColor = ScopeModeForeColor(mode);
-            cell.Style.SelectionBackColor = ControlPaint.Dark(ScopeModeBackColor(mode));
-            cell.Style.SelectionForeColor = ScopeModeForeColor(mode);
-        }
-
-        private static Color ScopeModeBackColor(string mode)
-        {
-            if (string.Equals(mode, "---", StringComparison.OrdinalIgnoreCase)) return SystemColors.ControlLight;
-            if (string.Equals(mode, ScopeModeRead, StringComparison.OrdinalIgnoreCase)) return Color.FromArgb(226, 239, 218);
-            if (string.Equals(mode, ScopeModeOverride, StringComparison.OrdinalIgnoreCase)) return Color.FromArgb(255, 242, 204);
-            if (string.Equals(mode, ScopeModeExport, StringComparison.OrdinalIgnoreCase)) return Color.FromArgb(221, 235, 247);
-            if (string.Equals(mode, ScopeModeFull, StringComparison.OrdinalIgnoreCase)) return Color.FromArgb(248, 203, 173);
-            return Color.FromArgb(224, 224, 224);
-        }
-
-        private static Color ScopeModeForeColor(string mode)
-        {
-            return string.Equals(mode, ScopeModeNone, StringComparison.OrdinalIgnoreCase) ||
-                string.Equals(mode, "---", StringComparison.OrdinalIgnoreCase)
-                ? SystemColors.GrayText
-                : SystemColors.ControlText;
-        }
-
-        private int OwnerSortOrder(string ownerServiceId)
-        {
-            return project.Services.FirstOrDefault(s => string.Equals(s.Id, ownerServiceId, StringComparison.Ordinal))?.SortOrder ?? int.MaxValue;
-        }
-
-        private static string OwnerDisplayName(string ownerServiceId, IDictionary<string, string> serviceById)
-        {
-            if (string.IsNullOrWhiteSpace(ownerServiceId)) return "(none)";
-            return serviceById.TryGetValue(ownerServiceId, out var name) ? name : ownerServiceId;
-        }
-
         private void AutoAssignAllPrefixes()
         {
             foreach (var service in project.Services)
@@ -4325,174 +1976,6 @@ namespace EnvSecured.WinForms.Forms
                 AutoAssignVariablesToService(service);
             }
             Changed();
-        }
-
-        private void RenderValidationView()
-        {
-            var root = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 3 };
-            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
-            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
-            root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-
-            var buttons = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false };
-            var validate = AddCommand(buttons, "Validate All", () => RefreshValidationResults(null), "Validate", 116);
-            buttons.Controls.Add(new Label
-            {
-                Text = "Checks duplicate names, broken references, required values and blank required values for every service/environment pair",
-                AutoSize = true,
-                Padding = new Padding(12, 7, 0, 0),
-                Font = new Font(Font, FontStyle.Bold)
-            });
-            var summary = new Label { Name = "ValidationSummary", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft };
-            mainGrid = BuildGrid();
-
-            root.Controls.Add(buttons, 0, 0);
-            root.Controls.Add(summary, 0, 1);
-            root.Controls.Add(mainGrid, 0, 2);
-            contentPanel.Controls.Add(root);
-            RefreshValidationResults(summary);
-            AttachColumnWidthPersistence(mainGrid, "ValidationResults");
-            RestoreColumnWidths(mainGrid, "ValidationResults");
-        }
-
-        private void RefreshValidationResults(Label summaryLabel)
-        {
-            var results = validationService.Validate(project).ToList();
-            if (mainGrid != null)
-            {
-                mainGrid.DataSource = results.Select(r => new
-                {
-                    r.Severity,
-                    Check = r.Code,
-                    Service = ServiceName(r.ServiceId),
-                    Environment = EnvironmentName(r.EnvironmentId),
-                    Variable = VariableKey(r.VariableId),
-                    r.Message
-                }).ToList();
-            }
-
-            if (summaryLabel == null)
-            {
-                summaryLabel = contentPanel.Controls.Find("ValidationSummary", true).FirstOrDefault() as Label;
-            }
-            if (summaryLabel != null)
-            {
-                var errors = results.Count(r => r.Severity == ValidationSeverity.Error);
-                var warnings = results.Count(r => r.Severity == ValidationSeverity.Warning);
-                summaryLabel.Text = results.Count == 0
-                    ? "Validation passed."
-                    : $"Validation found {errors} error(s), {warnings} warning(s).";
-                summaryLabel.ForeColor = errors > 0 ? Color.Red : SystemColors.ControlText;
-            }
-        }
-
-        private Control BuildCrudView(string title, Action add, Action edit, Action delete)
-        {
-            var root = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 2 };
-            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
-            root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-            var buttons = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false };
-            AddCommand(buttons, "Add", add, "Add", 86);
-            if (edit != null) AddCommand(buttons, "Edit", edit, "Edit", 86);
-            if (delete != null) AddCommand(buttons, "Delete", delete, "Delete", 96);
-            buttons.Controls.Add(new Label { Text = title, AutoSize = true, Padding = new Padding(12, 7, 0, 0), Font = new Font(Font, FontStyle.Bold) });
-            mainGrid = BuildGrid();
-            root.Controls.Add(buttons, 0, 0);
-            root.Controls.Add(mainGrid, 0, 1);
-            return root;
-        }
-
-        private static DataGridView BuildGrid()
-        {
-            return new DataGridView
-            {
-                Dock = DockStyle.Fill,
-                ReadOnly = true,
-                AllowUserToAddRows = false,
-                AllowUserToDeleteRows = false,
-                AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill,
-                SelectionMode = DataGridViewSelectionMode.FullRowSelect,
-                MultiSelect = false
-            };
-        }
-
-        private void AttachColumnWidthPersistence(DataGridView grid, string gridKey)
-        {
-            grid.ColumnWidthChanged += (s, e) =>
-            {
-                if (suppressColumnWidthPersistence || gridsRestoringColumns.Contains(grid)) return;
-                SaveColumnWidths(grid, gridKey);
-            };
-            grid.Disposed += (s, e) => gridsRestoringColumns.Remove(grid);
-        }
-
-        private void RestoreColumnWidths(DataGridView grid, string gridKey)
-        {
-            var widths = recentProjectsService.LoadGridColumnWidths(gridKey);
-            if (widths.Count == 0)
-            {
-                widths = DefaultColumnWidths(gridKey);
-            }
-            if (widths.Count == 0) return;
-
-            suppressColumnWidthPersistence = true;
-            gridsRestoringColumns.Add(grid);
-            try
-            {
-                grid.AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.None;
-                foreach (DataGridViewColumn column in grid.Columns)
-                {
-                    if (widths.TryGetValue(column.Name, out var width) && width > 20)
-                    {
-                        column.Width = width;
-                    }
-                }
-            }
-            finally
-            {
-                gridsRestoringColumns.Remove(grid);
-                suppressColumnWidthPersistence = false;
-            }
-        }
-
-        private void SaveColumnWidths(DataGridView grid, string gridKey)
-        {
-            if (suppressColumnWidthPersistence || grid.Columns.Count == 0) return;
-            recentProjectsService.SaveGridColumnWidths(
-                gridKey,
-                grid.Columns
-                    .Cast<DataGridViewColumn>()
-                    .Where(c => !string.IsNullOrWhiteSpace(c.Name) && c.Visible)
-                    .ToDictionary(c => c.Name, c => c.Width));
-        }
-
-        private static Dictionary<string, int> DefaultColumnWidths(string gridKey)
-        {
-            if (gridKey != "Variables")
-            {
-                return new Dictionary<string, int>();
-            }
-
-            return new Dictionary<string, int>
-            {
-                { "Validation", 35 },
-                { "Key", 300 },
-                { "Owner", 120 },
-                { "Export", 60 },
-                { "Secret", 56 },
-                { "AllowSharedSecret", 92 },
-                { "Required", 60 },
-                { "AllowNull", 75 },
-                { "Group", 140 },
-                { "DemoValue", 180 },
-                { "DemoComment", 180 },
-                { "Description", 240 },
-                { "Service", 170 },
-                { "ServiceEnvironment", 185 },
-                { "Effective", 245 },
-                { "Source", 100 },
-                { "Updated", 75 }
-            };
         }
 
         private DataGridView BuildVariablesGrid(TableLayoutPanel root)
@@ -4504,6 +1987,7 @@ namespace EnvSecured.WinForms.Forms
             grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Key", HeaderText = "Key", ReadOnly = true, FillWeight = 150 });
             grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Owner", HeaderText = "Owner", ReadOnly = true, FillWeight = 75 });
             grid.Columns.Add(new DataGridViewCheckBoxColumn { Name = "Export", HeaderText = "Export", FillWeight = 60 });
+            grid.Columns.Add(new DataGridViewCheckBoxColumn { Name = "Sync", HeaderText = "Sync", FillWeight = 55 });
             grid.Columns.Add(new DataGridViewCheckBoxColumn { Name = "Secret", HeaderText = "Secret", FillWeight = 55 });
             grid.Columns.Add(new DataGridViewCheckBoxColumn { Name = "AllowSharedSecret", HeaderText = "Shared Secret", FillWeight = 80 });
             grid.Columns.Add(new DataGridViewCheckBoxColumn { Name = "Required", HeaderText = "Required", FillWeight = 65 });
@@ -4592,6 +2076,8 @@ namespace EnvSecured.WinForms.Forms
             {
                 mainGrid.Columns["Export"].Visible = exportScopeServiceId != null;
                 mainGrid.Columns["Export"].ToolTipText = "Export this variable for the selected Scope service.";
+                mainGrid.Columns["Sync"].Visible = exportScopeServiceId != null;
+                mainGrid.Columns["Sync"].ToolTipText = "Sync this variable to external systems for the selected Scope service.";
             }
             var hasScope = svc != null;
             SetVariableGridScopeMode(hasScope);
@@ -4613,7 +2099,8 @@ namespace EnvSecured.WinForms.Forms
                 var updatedAt = effective?.SourceUpdatedAt ?? selected.UpdatedAt;
                 var updated = FormatUpdatedAtAge(updatedAt);
                 var export = exportScopeServiceId != null && IsVariableUsedByService(v.Id, exportScopeServiceId);
-                if (!PassesVariableColumnFilters(v, export, required, serviceValue, serviceEnvironmentValue, effectiveValue, source, updated, hasScope))
+                var sync = exportScopeServiceId != null && ProjectService.IsVariableSyncEnabledForService(project, v.Id, exportScopeServiceId);
+                if (!PassesVariableColumnFilters(v, export, sync, required, serviceValue, serviceEnvironmentValue, effectiveValue, source, updated, hasScope))
                 {
                     continue;
                 }
@@ -4624,6 +2111,7 @@ namespace EnvSecured.WinForms.Forms
                     v.Key,
                     OwnerDisplayName(v),
                     export,
+                    sync,
                     v.IsSecret,
                     v.AllowSharedSecret,
                     required,
@@ -4645,6 +2133,11 @@ namespace EnvSecured.WinForms.Forms
                 row.Cells["Export"].Style.BackColor = exportEditable ? Color.White : SystemColors.ControlLight;
                 row.Cells["Export"].ToolTipText = exportEditable
                         ? "Export this variable for the selected scope service."
+                        : "The variable is not in scope for the selected service.";
+                row.Cells["Sync"].ReadOnly = !exportEditable;
+                row.Cells["Sync"].Style.BackColor = exportEditable ? Color.White : SystemColors.ControlLight;
+                row.Cells["Sync"].ToolTipText = exportEditable
+                        ? "Sync this variable to external systems for the selected scope service."
                         : "The variable is not in scope for the selected service.";
                 if (svc == null)
                 {
@@ -4852,6 +2345,7 @@ namespace EnvSecured.WinForms.Forms
         private bool PassesVariableColumnFilters(
             VariableDefinitionModel variable,
             bool export,
+            bool sync,
             bool required,
             string serviceValue,
             string serviceEnvironmentValue,
@@ -4862,6 +2356,7 @@ namespace EnvSecured.WinForms.Forms
         {
             return PassesTextFilter("Key", variable.Key) &&
                 PassesBoolFilter("Export", export) &&
+                PassesBoolFilter("Sync", sync) &&
                 PassesBoolFilter("Secret", variable.IsSecret) &&
                 PassesBoolFilter("AllowSharedSecret", variable.AllowSharedSecret) &&
                 PassesTextFilter("Group", variable.GroupName) &&
@@ -4898,7 +2393,7 @@ namespace EnvSecured.WinForms.Forms
             if (column.Name == "Id") return;
 
             var menu = new ContextMenuStrip();
-            if (column.Name == "Export" || column.Name == "Secret" || column.Name == "AllowSharedSecret" || column.Name == "Required" || column.Name == "AllowNull")
+            if (column.Name == "Export" || column.Name == "Sync" || column.Name == "Secret" || column.Name == "AllowSharedSecret" || column.Name == "Required" || column.Name == "AllowNull")
             {
                 AddBoolFilterMenuItem(menu, column.Name, "All");
                 AddBoolFilterMenuItem(menu, column.Name, "Yes");
@@ -4988,6 +2483,7 @@ namespace EnvSecured.WinForms.Forms
             if (rowIndex < 0 || columnIndex < 0 || rowIndex >= grid.Rows.Count) return;
             var columnName = grid.Columns[columnIndex].Name;
             if (columnName != "Export" &&
+                columnName != "Sync" &&
                 columnName != "Secret" &&
                 columnName != "AllowSharedSecret" &&
                 columnName != "Required" &&
@@ -5029,6 +2525,25 @@ namespace EnvSecured.WinForms.Forms
                 var visible = ProjectService.IsVariableVisibleToService(project, variable, serviceId);
                 var allowOverride = ProjectService.CanOverrideVariableForService(project, variable, serviceId);
                 SetVariableServiceContractFlags(variable.Id, serviceId, enabled, visible, allowOverride);
+            }
+            else if (columnName == "Sync")
+            {
+                var serviceId = SelectedExportScopeServiceId();
+                if (serviceId == null || !ProjectService.IsVariableVisibleToService(project, variable, serviceId))
+                {
+                    grid.Rows[rowIndex].Cells[columnName].Value = false;
+                    return;
+                }
+
+                var contract = project.Contracts.FirstOrDefault(c => c.VariableId == variable.Id && c.ServiceId == serviceId);
+                if (contract == null)
+                {
+                    contract = ProjectService.EnsureServiceScopeContract(project, variable.Id, serviceId, false, true, false, enabled);
+                }
+                else
+                {
+                    contract.Sync = enabled;
+                }
             }
             else if (columnName == "Secret")
             {
@@ -5106,9 +2621,12 @@ namespace EnvSecured.WinForms.Forms
                 IsActive = true
             };
             if (!ShowEnvironmentCard(env, true)) return;
+            if (!EnsureVaultKey(project)) return;
             env.Id = UniqueEnvironmentId(Slug(env.Name));
             project.Environments.Add(env);
+            var secret = CreateDefaultEnvironmentAccessToken(env);
             Changed();
+            if (secret != null) TokenEditorDialog.ShowSecret(this, "Default Environment Token Created", secret);
         }
 
         private void EditEnvironment()
@@ -5124,6 +2642,10 @@ namespace EnvSecured.WinForms.Forms
             if (env == null || !ConfirmDelete(env.Name)) return;
             project.Environments.Remove(env);
             project.Values.RemoveAll(v => v.EnvironmentId == env.Id);
+            var tokenScopes = new TokenScopePolicyService();
+            project.AccessTokens.RemoveAll(t =>
+                (t.Type == "Environment" || t.Type == "ServiceEnvironment") &&
+                tokenScopes.ResolveEnvironmentId(t) == env.Id);
             Changed();
         }
 
@@ -5140,10 +2662,13 @@ namespace EnvSecured.WinForms.Forms
                 IsActive = true
             };
             if (!ShowServiceCard(service, true)) return;
+            if (!EnsureVaultKey(project)) return;
             service.Id = UniqueServiceId(Slug(service.Name));
             project.Services.Add(service);
             AutoAssignVariablesToService(service);
+            var secret = CreateDefaultServiceAccessToken(service);
             Changed();
+            if (secret != null) TokenEditorDialog.ShowSecret(this, "Default Service Token Created", secret);
         }
 
         private void EditService()
@@ -5162,6 +2687,10 @@ namespace EnvSecured.WinForms.Forms
             project.Services.Remove(service);
             project.Contracts.RemoveAll(c => c.ServiceId == service.Id);
             project.Values.RemoveAll(v => v.ServiceId == service.Id);
+            var tokenScopes = new TokenScopePolicyService();
+            project.AccessTokens.RemoveAll(t =>
+                (t.Type == "Service" || t.Type == "ServiceEnvironment") &&
+                tokenScopes.ResolveServiceId(t) == service.Id);
             Changed();
         }
 
@@ -5631,7 +3160,7 @@ namespace EnvSecured.WinForms.Forms
 
                 var scopeHeader = new Label
                 {
-                    Text = "Service Scope: NONE / Read / Override / Export / Full",
+                    Text = "Service Scope: mode controls visibility/override/file export; Sync controls external integrations",
                     Dock = DockStyle.Fill,
                     TextAlign = ContentAlignment.MiddleLeft,
                     Font = new Font(Font, FontStyle.Bold)
@@ -5802,12 +3331,19 @@ namespace EnvSecured.WinForms.Forms
             };
             modeColumn.Items.AddRange(ScopeModes.Cast<object>().ToArray());
             grid.Columns.Add(modeColumn);
+            grid.Columns.Add(new DataGridViewCheckBoxColumn { Name = "Sync", HeaderText = "Sync", FillWeight = 55 });
             grid.DataError += (s, e) => { e.ThrowException = false; };
             grid.CellValueChanged += (s, e) =>
             {
                 if (e.RowIndex < 0 || e.ColumnIndex < 0 || grid.Columns[e.ColumnIndex].Name != "Mode") return;
                 var cell = grid.Rows[e.RowIndex].Cells[e.ColumnIndex];
-                ApplyScopeModeCellStyle(cell, Convert.ToString(cell.Value));
+                var mode = Convert.ToString(cell.Value);
+                ApplyScopeModeCellStyle(cell, mode);
+                var syncCell = grid.Rows[e.RowIndex].Cells["Sync"];
+                var disabled = string.Equals(mode, ScopeModeNone, StringComparison.OrdinalIgnoreCase);
+                syncCell.ReadOnly = disabled;
+                syncCell.Style.BackColor = disabled ? SystemColors.ControlLight : Color.White;
+                if (disabled) syncCell.Value = false;
             };
             grid.CurrentCellDirtyStateChanged += (s, e) =>
             {
@@ -5832,6 +3368,7 @@ namespace EnvSecured.WinForms.Forms
                 row.Cells["Service"].Style.BackColor = SystemColors.ControlLight;
                 var isOwner = string.Equals(ownerServiceId, service.Id, StringComparison.Ordinal);
                 var mode = isOwner ? "---" : ScopeModeFromContract(variable.Id, service.Id);
+                var contract = project.Contracts.FirstOrDefault(c => c.VariableId == variable.Id && c.ServiceId == service.Id);
                 if (isOwner)
                 {
                     row.Cells["Mode"] = new DataGridViewTextBoxCell();
@@ -5845,6 +3382,9 @@ namespace EnvSecured.WinForms.Forms
                 }
                 row.Cells["Mode"].Value = mode;
                 ApplyScopeModeCellStyle(row.Cells["Mode"], mode);
+                row.Cells["Sync"].Value = ProjectService.IsContractSyncEnabled(contract);
+                row.Cells["Sync"].ReadOnly = !isOwner && string.Equals(mode, ScopeModeNone, StringComparison.OrdinalIgnoreCase);
+                row.Cells["Sync"].Style.BackColor = row.Cells["Sync"].ReadOnly ? SystemColors.ControlLight : Color.White;
             }
         }
 
@@ -5853,19 +3393,28 @@ namespace EnvSecured.WinForms.Forms
             foreach (DataGridViewRow row in grid.Rows)
             {
                 var serviceId = Convert.ToString(row.Cells["ServiceId"].Value);
-                if (string.IsNullOrWhiteSpace(serviceId) || string.Equals(variable.OwnerServiceId, serviceId, StringComparison.Ordinal))
+                if (string.IsNullOrWhiteSpace(serviceId))
                 {
                     continue;
                 }
 
+                var sync = Convert.ToBoolean(row.Cells["Sync"].Value ?? false);
+                if (string.Equals(variable.OwnerServiceId, serviceId, StringComparison.Ordinal))
+                {
+                    var ownerContract = project.Contracts.FirstOrDefault(c => c.VariableId == variable.Id && c.ServiceId == serviceId) ??
+                        ProjectService.EnsureServiceScopeContract(project, variable.Id, serviceId, false, true, true, sync);
+                    ownerContract.Sync = sync;
+                    continue;
+                }
+
                 ParseScopeMode(Convert.ToString(row.Cells["Mode"].Value), out var visible, out var allowOverride, out var export);
-                if (!visible && !allowOverride && !export)
+                if (!visible && !allowOverride && !export && !sync)
                 {
                     project.Contracts.RemoveAll(c => c.VariableId == variable.Id && c.ServiceId == serviceId);
                 }
                 else
                 {
-                    ProjectService.EnsureServiceScopeContract(project, variable.Id, serviceId, export, visible, allowOverride);
+                    ProjectService.EnsureServiceScopeContract(project, variable.Id, serviceId, export, visible, allowOverride, sync);
                 }
             }
         }
@@ -6334,465 +3883,6 @@ namespace EnvSecured.WinForms.Forms
             modified = true;
             SaveRecoveryBackupIfPossible();
             RenderCurrentView();
-        }
-
-        private void SaveRecoveryBackupIfPossible()
-        {
-            if (project == null || string.IsNullOrWhiteSpace(currentFilePath)) return;
-
-            try
-            {
-                SaveVaultFile(currentFilePath, true);
-            }
-            catch (Exception ex)
-            {
-                if (recoveryBackupWarningShown) return;
-                recoveryBackupWarningShown = true;
-                MessageBox.Show(
-                    this,
-                    "Could not write the unsaved backup file.\r\n\r\n" + ex.Message,
-                    "Autosave Backup",
-                    MessageBoxButtons.OK,
-                    MessageBoxIcon.Warning);
-            }
-        }
-
-        private bool SaveVaultFile(string path, bool recoveryBackup)
-        {
-            var storageProject = PrepareProjectForStorage();
-            if (storageProject == null)
-            {
-                return false;
-            }
-
-            if (IsWholeJsonEncryption(storageProject))
-            {
-                if (!SaveWholeJsonVaultFile(storageProject, path, recoveryBackup))
-                {
-                    return false;
-                }
-                return true;
-            }
-
-            if (recoveryBackup)
-            {
-                vaultFileService.SaveRecoveryBackup(storageProject, path);
-            }
-            else
-            {
-                vaultFileService.Save(storageProject, path);
-            }
-
-            return true;
-        }
-
-        private bool SaveSplitVaultFile(ProjectModel splitProject, string path, string password)
-        {
-            var previousProject = project;
-            var previousKey = vaultKey == null ? null : (byte[])vaultKey.Clone();
-            try
-            {
-                project = splitProject;
-                ClearVaultKey();
-                if (!string.Equals(GetProjectEncryptionMode(splitProject), "Open", StringComparison.OrdinalIgnoreCase))
-                {
-                    if (!CreateVaultKey(splitProject, password, password))
-                    {
-                        return false;
-                    }
-                }
-
-                var directory = Path.GetDirectoryName(Path.GetFullPath(path));
-                if (!string.IsNullOrWhiteSpace(directory))
-                {
-                    Directory.CreateDirectory(directory);
-                }
-                return SaveVaultFile(path, false);
-            }
-            finally
-            {
-                project = previousProject;
-                ClearVaultKey();
-                if (previousKey != null)
-                {
-                    SetVaultKey(previousKey);
-                }
-            }
-        }
-
-        private ProjectModel LoadVaultFile(string path, bool recoveryBackup)
-        {
-            var actualPath = recoveryBackup ? vaultFileService.GetRecoveryBackupPath(path) : path;
-            var json = File.ReadAllText(actualPath);
-            var serializer = new JavaScriptSerializer { MaxJsonLength = int.MaxValue };
-
-            if (TryReadEncryptedEnvelope(json, serializer, out var envelope))
-            {
-                if (envelope?.Payload == null || envelope.Crypto == null)
-                {
-                    MessageBox.Show(this, "Encrypted project file is invalid.", "Open Project", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                    return null;
-                }
-
-                var key = UnlockCryptoMetadata(envelope.Crypto);
-                if (key == null) return null;
-                SetVaultKey(key);
-                var projectJson = cryptoService.DecryptString(envelope.Payload, key);
-                var decryptedProject = serializer.Deserialize<ProjectModel>(projectJson);
-                decryptedProject.Crypto = envelope.Crypto;
-                NormalizeLoadedProjectSettings(decryptedProject);
-                DecryptCliExportPolicy(decryptedProject, key);
-                return decryptedProject;
-            }
-
-            var loadedProject = serializer.Deserialize<ProjectModel>(json);
-            NormalizeLoadedProjectSettings(loadedProject);
-            if (!UnlockProjectIfNeeded(loadedProject))
-            {
-                return null;
-            }
-            return loadedProject;
-        }
-
-        private static bool TryReadEncryptedEnvelope(string json, JavaScriptSerializer serializer, out EncryptedProjectFile envelope)
-        {
-            return EncryptedEnvelopeDetector.TryRead(json, serializer, out envelope);
-        }
-
-        private bool SaveWholeJsonVaultFile(ProjectModel storageProject, string path, bool recoveryBackup)
-        {
-            if (!EnsureVaultKey(storageProject))
-            {
-                return false;
-            }
-            project.Crypto = storageProject.Crypto;
-
-            var serializer = new JavaScriptSerializer { MaxJsonLength = int.MaxValue };
-            var projectJson = serializer.Serialize(storageProject);
-            var envelope = new EncryptedProjectFile
-            {
-                Crypto = storageProject.Crypto,
-                Payload = cryptoService.EncryptString(projectJson, vaultKey)
-            };
-            var envelopeJson = serializer.Serialize(envelope);
-            var actualPath = recoveryBackup ? vaultFileService.GetRecoveryBackupPath(path) : path;
-            SaveTextAtomic(envelopeJson, actualPath, false);
-            return true;
-        }
-
-        private static void SaveTextAtomic(string text, string path, bool keepBackup)
-        {
-            var tempPath = path + ".tmp";
-            File.WriteAllText(tempPath, text);
-            if (File.Exists(path))
-            {
-                if (keepBackup)
-                {
-                    File.Copy(path, path + ".bak", true);
-                }
-                File.Delete(path);
-            }
-            File.Move(tempPath, path);
-            var backupPath = path + ".bak";
-            if (!keepBackup && File.Exists(backupPath))
-            {
-                File.Delete(backupPath);
-            }
-        }
-
-        private ProjectModel PrepareProjectForStorage()
-        {
-            var storageProject = CloneProject(project);
-            storageProject.Settings = storageProject.Settings ?? new ProjectSettings();
-            storageProject.Settings.CliExportPasswordRequired = project.Settings?.CliExportPasswordRequired == true;
-            storageProject.Settings.CliExportPasswordRequiredPolicy = storageProject.Settings.CliExportPasswordRequired;
-            NormalizeLoadedProjectSettings(storageProject);
-            if (IsWholeJsonEncryption(storageProject))
-            {
-                if (!PrepareCliExportPolicyForStorage(storageProject))
-                {
-                    return null;
-                }
-                foreach (var value in storageProject.Values)
-                {
-                    value.EncryptedValue = null;
-                    value.IsEncrypted = false;
-                }
-                return storageProject;
-            }
-
-            if (!PrepareCliExportPolicyForStorage(storageProject))
-            {
-                return null;
-            }
-
-            if (!ProjectRequiresValueEncryption(storageProject))
-            {
-                foreach (var value in storageProject.Values)
-                {
-                    value.EncryptedValue = null;
-                    value.IsEncrypted = false;
-                }
-                return storageProject;
-            }
-
-            if (!EnsureVaultKey(storageProject))
-            {
-                return null;
-            }
-            project.Crypto = storageProject.Crypto;
-
-            foreach (var value in storageProject.Values)
-            {
-                var variable = storageProject.Variables.FirstOrDefault(v => v.Id == value.VariableId);
-                if (!ShouldEncryptValue(storageProject, variable)) 
-                {
-                    value.EncryptedValue = null;
-                    value.IsEncrypted = false;
-                    continue;
-                }
-                value.EncryptedValue = cryptoService.EncryptString(value.Value ?? string.Empty, vaultKey);
-                value.Value = null;
-                value.IsEncrypted = true;
-            }
-
-            return storageProject;
-        }
-
-        private bool UnlockProjectIfNeeded(ProjectModel loadedProject)
-        {
-            ClearVaultKey();
-            if (!ProjectHasEncryptedValues(loadedProject))
-            {
-                return true;
-            }
-
-            if (!EnsureVaultKey(loadedProject))
-            {
-                return false;
-            }
-
-            foreach (var value in loadedProject.Values.Where(v => v.IsEncrypted && v.EncryptedValue != null))
-            {
-                value.Value = cryptoService.DecryptString(value.EncryptedValue, vaultKey);
-                value.EncryptedValue = null;
-            }
-
-            DecryptCliExportPolicy(loadedProject, vaultKey);
-
-            return true;
-        }
-
-        private bool PrepareCliExportPolicyForStorage(ProjectModel storageProject)
-        {
-            storageProject.Settings = storageProject.Settings ?? new ProjectSettings();
-            if (!EnsureVaultKey(storageProject))
-            {
-                return false;
-            }
-
-            storageProject.Settings.CliExportPasswordRequiredEncrypted = cryptoService.EncryptString(storageProject.Settings.CliExportPasswordRequired ? "required:true:v1" : "required:false:v1", vaultKey);
-            storageProject.Settings.CliExportPasswordRequiredPolicy = storageProject.Settings.CliExportPasswordRequired;
-            project.Crypto = storageProject.Crypto;
-            return true;
-        }
-
-        private void DecryptCliExportPolicy(ProjectModel targetProject, byte[] key)
-        {
-            targetProject.Settings = targetProject.Settings ?? new ProjectSettings();
-            if (targetProject.Settings.CliExportPasswordRequiredEncrypted == null)
-            {
-                targetProject.Settings.CliExportPasswordRequired = true;
-                targetProject.Settings.CliExportPasswordRequiredPolicy = true;
-                return;
-            }
-
-            var value = cryptoService.DecryptString(targetProject.Settings.CliExportPasswordRequiredEncrypted, key);
-            targetProject.Settings.CliExportPasswordRequired = string.Equals(value, "required:true:v1", StringComparison.Ordinal);
-            targetProject.Settings.CliExportPasswordRequiredPolicy = targetProject.Settings.CliExportPasswordRequired;
-        }
-
-        private byte[] UnlockCryptoMetadata(VaultCryptoMetadata crypto)
-        {
-            var cachedKey = TryLoadCachedVaultKey(crypto);
-            if (cachedKey != null)
-            {
-                return cachedKey;
-            }
-
-            while (true)
-            {
-                var password = PromptDialog.ShowPassword(this, "Unlock Vault", "Master password:");
-                if (password == null) return null;
-                byte[] key = null;
-                try
-                {
-                    key = cryptoService.DeriveKey(password, Convert.FromBase64String(crypto.Salt), crypto.Iterations);
-                    cryptoService.DecryptString(crypto.KeyCheck, key);
-                    SaveCachedVaultKey(crypto, key);
-                    return key;
-                }
-                catch (Exception ex)
-                {
-                    ClearKey(key);
-                    MessageBox.Show(this, "Cannot unlock vault.\r\n\r\n" + ex.Message, "Unlock Vault", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                }
-            }
-        }
-
-        private bool EnsureVaultKey(ProjectModel targetProject)
-        {
-            if (vaultKey != null) return true;
-
-            targetProject.Crypto = targetProject.Crypto ?? new VaultCryptoMetadata();
-            if (string.IsNullOrWhiteSpace(targetProject.Crypto.Salt) || targetProject.Crypto.KeyCheck == null)
-            {
-                return CreateVaultKey(targetProject);
-            }
-
-            SetVaultKey(UnlockCryptoMetadata(targetProject.Crypto));
-            return vaultKey != null;
-        }
-
-        private bool CreateVaultKey(ProjectModel targetProject)
-        {
-            var password = PromptDialog.ShowPassword(this, "Create Vault Password", "Master password for encrypted values:");
-            if (password == null) return false;
-            var confirm = PromptDialog.ShowPassword(this, "Create Vault Password", "Repeat master password:");
-            return CreateVaultKey(targetProject, password, confirm);
-        }
-
-        private bool CreateVaultKey(ProjectModel targetProject, string password, string confirm)
-        {
-            if (password == null || confirm == null) return false;
-            if (password.Length == 0)
-            {
-                MessageBox.Show(this, "Master password cannot be empty.", "Create Vault Password", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                return false;
-            }
-            if (password != confirm)
-            {
-                MessageBox.Show(this, "Passwords do not match.", "Create Vault Password", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                return false;
-            }
-
-            var salt = new byte[32];
-            using (var rng = RandomNumberGenerator.Create())
-            {
-                rng.GetBytes(salt);
-            }
-
-            targetProject.Crypto.Salt = Convert.ToBase64String(salt);
-            targetProject.Crypto.Iterations = targetProject.Crypto.Iterations <= 0 ? 300000 : targetProject.Crypto.Iterations;
-            SetVaultKey(cryptoService.DeriveKey(password, salt, targetProject.Crypto.Iterations));
-            targetProject.Crypto.KeyCheck = cryptoService.EncryptString("EnvSecuredVaultKeyCheck:v1", vaultKey);
-            SaveCachedVaultKey(targetProject.Crypto, vaultKey);
-            return true;
-        }
-
-        private byte[] TryLoadCachedVaultKey(VaultCryptoMetadata crypto)
-        {
-            var cachePath = GetVaultKeyCachePath(crypto);
-            if (cachePath == null) return null;
-
-            try
-            {
-                var key = dpapiCacheService.TryLoad(cachePath);
-                if (key == null) return null;
-                try
-                {
-                    cryptoService.DecryptString(crypto.KeyCheck, key);
-                    return key;
-                }
-                catch
-                {
-                    ClearKey(key);
-                    return null;
-                }
-            }
-            catch
-            {
-                return null;
-            }
-        }
-
-        private void SaveCachedVaultKey(VaultCryptoMetadata crypto, byte[] key)
-        {
-            var cachePath = GetVaultKeyCachePath(crypto);
-            if (cachePath == null || key == null) return;
-
-            try
-            {
-                dpapiCacheService.Save(cachePath, key);
-            }
-            catch (Exception ex)
-            {
-                MessageBox.Show(this, "Could not save local vault unlock cache.\r\n\r\n" + ex.Message, "Unlock Cache", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-            }
-        }
-
-        private static string GetVaultKeyCachePath(VaultCryptoMetadata crypto)
-        {
-            if (crypto == null || string.IsNullOrWhiteSpace(crypto.Salt) || crypto.KeyCheck == null)
-            {
-                return null;
-            }
-
-            var material = crypto.Salt + "|" + crypto.Iterations + "|" + crypto.KeyCheck.Nonce + "|" + crypto.KeyCheck.Tag;
-            using (var sha = SHA256.Create())
-            {
-                var hash = sha.ComputeHash(Encoding.UTF8.GetBytes(material));
-                var name = BitConverter.ToString(hash).Replace("-", string.Empty).ToLowerInvariant() + ".key";
-                return Path.Combine(
-                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                    "EnvSecured",
-                    "VaultKeyCache",
-                    name);
-            }
-        }
-
-        private static bool ProjectRequiresValueEncryption(ProjectModel targetProject)
-        {
-            var mode = GetProjectEncryptionMode(targetProject);
-            return string.Equals(mode, "AllValues", StringComparison.OrdinalIgnoreCase) ||
-                string.Equals(mode, "SecretsOnly", StringComparison.OrdinalIgnoreCase);
-        }
-
-        private static bool IsWholeJsonEncryption(ProjectModel targetProject)
-        {
-            return string.Equals(GetProjectEncryptionMode(targetProject), "WholeJson", StringComparison.OrdinalIgnoreCase);
-        }
-
-        private static bool ProjectHasEncryptedValues(ProjectModel targetProject)
-        {
-            return targetProject.Values.Any(v => v.IsEncrypted && v.EncryptedValue != null) ||
-                targetProject.Settings?.CliExportPasswordRequiredEncrypted != null;
-        }
-
-        private static bool ShouldEncryptValue(ProjectModel targetProject, VariableDefinitionModel variable)
-        {
-            var mode = GetProjectEncryptionMode(targetProject);
-            if (string.Equals(mode, "AllValues", StringComparison.OrdinalIgnoreCase)) return true;
-            if (string.Equals(mode, "SecretsOnly", StringComparison.OrdinalIgnoreCase)) return variable?.IsSecret == true;
-            return false;
-        }
-
-        private static void NormalizeLoadedProjectSettings(ProjectModel targetProject)
-        {
-            if (targetProject == null) return;
-            ProjectService.EnsureProjectCollections(targetProject);
-            targetProject.Settings = targetProject.Settings ?? new ProjectSettings();
-            if (string.IsNullOrWhiteSpace(targetProject.Settings.EncryptionMode))
-            {
-                targetProject.Settings.EncryptionMode = targetProject.Settings.EncryptAllValues ? "AllValues" : "Open";
-            }
-            targetProject.Settings.EncryptAllValues = string.Equals(targetProject.Settings.EncryptionMode, "AllValues", StringComparison.OrdinalIgnoreCase);
-        }
-
-        private static ProjectModel CloneProject(ProjectModel source)
-        {
-            var serializer = new JavaScriptSerializer { MaxJsonLength = int.MaxValue };
-            return serializer.Deserialize<ProjectModel>(serializer.Serialize(source));
         }
 
         private void RefreshStatus()

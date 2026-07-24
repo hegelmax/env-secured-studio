@@ -32,6 +32,17 @@ namespace EnvSecured.Core.Services
             return contract != null && !contract.Excluded;
         }
 
+        public static bool IsVariableSyncEnabledForService(ProjectModel project, string variableId, string serviceId)
+        {
+            var contract = project.Contracts.FirstOrDefault(c => c.VariableId == variableId && c.ServiceId == serviceId);
+            return IsContractSyncEnabled(contract);
+        }
+
+        public static bool IsContractSyncEnabled(VariableContractModel contract)
+        {
+            return contract != null && (contract.Sync ?? !contract.Excluded);
+        }
+
         public static bool IsVariableSharedFromService(ProjectModel project, string variableId, string sourceServiceId)
         {
             if (string.IsNullOrWhiteSpace(sourceServiceId)) return true;
@@ -90,9 +101,13 @@ namespace EnvSecured.Core.Services
             project.Variables = project.Variables ?? new List<VariableDefinitionModel>();
             project.Contracts = project.Contracts ?? new List<VariableContractModel>();
             project.Values = project.Values ?? new List<VariableValueModel>();
+            project.AccessTokens = project.AccessTokens ?? new List<AccessTokenModel>();
+            project.VaultIntegrity = project.VaultIntegrity ?? new IntegrityTagModel();
+            project.Sync = project.Sync ?? new ProjectSyncSettings();
+            project.Sync.Providers = project.Sync.Providers ?? new List<SyncProviderModel>();
         }
 
-        public static VariableContractModel EnsureServiceScopeContract(ProjectModel project, string variableId, string serviceId, bool export, bool visible, bool allowOverride)
+        public static VariableContractModel EnsureServiceScopeContract(ProjectModel project, string variableId, string serviceId, bool export, bool visible, bool allowOverride, bool? sync = null)
         {
             var contract = project.Contracts.FirstOrDefault(c => c.VariableId == variableId && c.ServiceId == serviceId);
             if (contract == null)
@@ -108,6 +123,7 @@ namespace EnvSecured.Core.Services
             }
 
             contract.Excluded = !export;
+            contract.Sync = sync ?? contract.Sync ?? export;
             contract.Required = export;
             contract.VisibleToService = visible;
             contract.AllowOverride = visible && allowOverride;

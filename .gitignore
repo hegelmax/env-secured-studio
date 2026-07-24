@@ -29,6 +29,8 @@ packages/
 # Local project data and generated exports
 *.autosave.json
 *.vault.local.json
+*.envs
+*.envs.*
 out/
 exports/
 

@@ -1,5 +1,41 @@
 # Changelog
 
+## 1.2.0.10
+
+- Added the nested `EnvSecured.Vault` v2 storage format: owner values and service scopes now live inside each variable, explicit `Visible`, `AllowOverride`, `Export`, and `Required` flags replace serialized contracts, and settings are grouped under `Settings.Output` and `Settings.Cli`.
+- Added automatic v1-to-v2 conversion with a one-time `.v1.bak` copy of the original vault, plus an explicit CLI `migrate` command.
+- Added envelope encryption with one encrypted value ciphertext and separately wrapped DEK key slots for the admin key and authorized access tokens.
+- Added rotatable/revocable access tokens, strict four-segment grant parsing, service/environment default-token generation, one-time secret display, CLI token lifecycle commands, and a WinForms Access Tokens screen.
+- Added a visual grant-rule builder to the token editor with multi-select service/environment/variable selectors, variable-mask mode, permission checkboxes, live DSL preview, rule editing/removal, and an advanced text fallback.
+- Fixed editing an existing grant rule before the builder window handle was created, which previously raised a WinForms `BeginInvoke` exception.
+- Made access-token types enforce real authorization boundaries through persisted `ServiceId` and `EnvironmentId`: typed grants cannot escape their declared scope and are validated during creation, editing, rotation, save, and use.
+- Added token-editor service/environment selectors with automatic typed-token IDs, names, and default grants, fixing the confusing blank-ID error when creating a service or environment token.
+- Added administrator token reveal/copy for active credentials and replaced the single-line default-token result with a resizable, scrollable list that supports Copy All and explicit file saving.
+- Replaced newly issued `envs_v2.<id>.<version>.<key>` secrets with opaque Base62 containers backed by random lookup IDs, while retaining legacy token parsing until rotation or revocation.
+- Added authenticated metadata and integrity checks for vault, variable, token policy, key, flags, scopes, grants, and encrypted-value AAD so manual file edits fail closed.
+- Fixed v2 vault opening when a legacy owner-service scope is normalized during runtime conversion: integrity is verified against the stored v2 document, legacy value AAD remains authenticated during one-time normalization, actual file changes still fail closed, and failures are reported without an unhandled JIT dialog.
+- Added token-aware CLI reads and batch exports; `Read` remains available for explicit value inspection, while `BatchExport` omits scopes with `Export = false`.
+- Added full CLI variable metadata output through `variable-show`, including owner flags, service scopes, direct values, and effective source metadata.
+- Split service-scope publication into independent `Export` and `Sync` flags: file/CLI exports use `Export`, external providers use `Sync`, existing vaults inherit missing `Sync` values from `Export`, and both flags are authenticated.
+- Updated whole-JSON envelopes to `EnvSecured.EncryptedVault` version 2 while keeping legacy envelope reads compatible.
+- Added the first synchronization provider foundation for GitHub Actions: the UI now checks for the local GitHub CLI (`gh`), blocks GitHub provider setup when it is unavailable, and stores provider connection settings encrypted inside the vault.
+- Added GitHub provider connection testing and environment discovery through `gh`, while still allowing project environments or manually typed environment names when the remote environment does not exist yet.
+- Added GitHub environment mapping with per-environment include flags and remote-environment dropdowns, so local vault environments can target differently named GitHub environments such as `preview -> test`.
+- Improved GitHub environment mapping so remote environments are loaded only after organization/repository selection, mappings can be cleared, and remote-only environments can be mapped to newly created local vault environments.
+- Added GitHub environment creation from provider setup when an included vault environment has no existing GitHub environment mapping.
+- Split GitHub environment mapping into existing-environment selection and explicit new-name entry, with validation that new names do not already exist or repeat in the mapping.
+- Added GitHub sync preview for selected providers, comparing local sync-enabled values with GitHub Actions environment variables and secret names without changing remote data.
+- Added the GitHub sync scope and mode section with environment/service selection, variable filters, and sync mode settings.
+- Added CLI `sync-list`, `sync-preview`, and guarded `sync-push` commands for GitHub Actions providers. CLI sync honors provider mappings, filters, all four sync modes, and the independent variable `Sync` flag; writes use stdin, pushes are dry-run by default, and deletions require explicit confirmation.
+- Added keyed GitHub secret fingerprints in the reserved `ENVSECURED_SECRET_FP_<24_HEX>` variable namespace, allowing UI and CLI previews to compare write-only secrets without occupying application names such as `DB_PASSWORD_HASH` or exposing a reusable plain hash; fingerprint-key and variable-name conflicts fail closed.
+- Added command-specific sync help, `--help commands`, and standalone `--help docs` backed by Markdown embedded in the executable.
+- Added the executable version to `--help` and `--help commands` headers.
+- Added headless sync-provider create/edit/delete/init and fingerprint-key rotation commands with encrypted CLI persistence, identity environment-map defaults, and validation matching the UI.
+- Documented and enabled non-interactive GitHub authentication through inherited `GH_TOKEN`/`GITHUB_TOKEN`, with child prompts disabled for CI.
+- Added `--check true` drift gating with exit code `2`, and documented owner/service `Sync` union and flat GitHub-key conflict resolution.
+- Cached the resolved GitHub CLI path in local user settings so machine-specific tool locations are not stored in the vault and full command discovery only runs when the cached file is missing.
+- Split the oversized WinForms `MainForm` into partial files for export, import/merge/split, scope, sync providers, grid/validation helpers, and vault persistence.
+
 ## 1.1.2.7
 
 - Added CLI vault `split` for exporting selected variables into a new `.envs` file, including referenced `{{KEY}}` variables by default and allowing a new target password/encryption mode.

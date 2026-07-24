@@ -49,8 +49,12 @@ The Release target embeds project assemblies into the main executable. The inten
 
 ```powershell
 EnvSecured.exe --help
+EnvSecured.exe --help commands
+EnvSecured.exe --help docs
 EnvSecured.exe validate --file C:\path\project.envs
 EnvSecured.exe export --file C:\path\project.envs --all --output-root C:\project\out
+EnvSecured.exe sync-preview --file C:\path\project.envs --provider github-main
+EnvSecured.exe sync-push --file C:\path\project.envs --provider github-main --apply true
 ```
 
 Project vault files use the `.envs` extension. Double-click opening can be registered with `EnvSecured.exe --register-association`.
@@ -76,6 +80,7 @@ More CLI details are in [docs/CLI.md](docs/CLI.md).
 
 - [Build and release](docs/BUILD.md)
 - [CLI reference](docs/CLI.md)
+- [Vault file format v2](docs/VAULT_FORMAT_V2.md)
 - [Changelog](CHANGES.md)
 - [Project model](docs/PROJECT_MODEL.md)
 - [Security model](docs/SECURITY.md)
