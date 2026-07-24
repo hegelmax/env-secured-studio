@@ -16,6 +16,9 @@ namespace EnvSecured.Core.Models
         public List<VariableDefinitionModel> Variables { get; set; } = new List<VariableDefinitionModel>();
         public List<VariableContractModel> Contracts { get; set; } = new List<VariableContractModel>();
         public List<VariableValueModel> Values { get; set; } = new List<VariableValueModel>();
+        public List<AccessTokenModel> AccessTokens { get; set; } = new List<AccessTokenModel>();
+        public IntegrityTagModel VaultIntegrity { get; set; } = new IntegrityTagModel();
+        public ProjectSyncSettings Sync { get; set; } = new ProjectSyncSettings();
     }
 
     public sealed class ProjectSettings
@@ -48,5 +51,48 @@ namespace EnvSecured.Core.Models
         public string ServiceId { get; set; }
         public string EnvironmentId { get; set; }
         public bool Enabled { get; set; } = true;
+    }
+
+    public sealed class ProjectSyncSettings
+    {
+        public List<SyncProviderModel> Providers { get; set; } = new List<SyncProviderModel>();
+    }
+
+    public sealed class SyncProviderModel
+    {
+        public string Id { get; set; }
+        public string Type { get; set; }
+        public string Name { get; set; }
+        public bool IsEnabled { get; set; } = true;
+        public EncryptedPayload EncryptedSettings { get; set; }
+        public string LastCheckedAt { get; set; }
+        public string LastStatus { get; set; }
+
+        [ScriptIgnore]
+        public Dictionary<string, string> Settings { get; set; } = new Dictionary<string, string>();
+    }
+
+    public sealed class IntegrityTagModel
+    {
+        public string Tag { get; set; }
+    }
+
+    public sealed class AccessTokenModel
+    {
+        public string Id { get; set; }
+        public string Name { get; set; }
+        public string Type { get; set; } = "Custom";
+        public string ServiceId { get; set; }
+        public string EnvironmentId { get; set; }
+        public string LookupId { get; set; }
+        public int Version { get; set; } = 1;
+        public string Status { get; set; } = "Active";
+        public List<string> Grants { get; set; } = new List<string>();
+        public EncryptedPayload AdminWrappedTokenKey { get; set; }
+        public string Verifier { get; set; }
+        public string CreatedAt { get; set; }
+        public string RotatedAt { get; set; }
+        public string ExpiresAt { get; set; }
+        public IntegrityTagModel Integrity { get; set; } = new IntegrityTagModel();
     }
 }

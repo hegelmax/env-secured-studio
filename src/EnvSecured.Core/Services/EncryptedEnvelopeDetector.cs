@@ -7,7 +7,8 @@ namespace EnvSecured.Core.Services
 {
     public static class EncryptedEnvelopeDetector
     {
-        public const string Format = "EnvSecured.EncryptedProject.v1";
+        public const string Format = "EnvSecured.EncryptedVault";
+        public const string LegacyFormat = "EnvSecured.EncryptedProject.v1";
 
         public static bool TryRead(string json, JavaScriptSerializer serializer, out EncryptedProjectFile envelope)
         {
@@ -17,7 +18,8 @@ namespace EnvSecured.Core.Services
                 var root = serializer.DeserializeObject(json) as Dictionary<string, object>;
                 if (root == null ||
                     !root.TryGetValue("Format", out var format) ||
-                    !string.Equals(Convert.ToString(format), Format, StringComparison.Ordinal))
+                    !string.Equals(Convert.ToString(format), Format, StringComparison.Ordinal) &&
+                    !string.Equals(Convert.ToString(format), LegacyFormat, StringComparison.Ordinal))
                 {
                     return false;
                 }

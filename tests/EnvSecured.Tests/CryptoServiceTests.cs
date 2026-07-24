@@ -91,5 +91,17 @@ namespace EnvSecured.Tests
 
             Assert.Throws<CryptographicException>(() => service.DecryptString(payload, wrongKey));
         }
+
+        [Fact]
+        public void AuthenticatedDataBindsCiphertextToContext()
+        {
+            var service = new CryptoService();
+            var key = service.DeriveKey("password", Enumerable.Range(1, 32).Select(i => (byte)i).ToArray(), 1000);
+            var payload = service.EncryptStringWithAad("secret-value", key, "vault|variable-a|dev");
+
+            Assert.Equal("secret-value", service.DecryptStringWithAad(payload, key, "vault|variable-a|dev"));
+            Assert.Throws<CryptographicException>(() => service.DecryptStringWithAad(payload, key, "vault|variable-b|dev"));
+            Assert.Throws<CryptographicException>(() => service.DecryptString(payload, key));
+        }
     }
 }

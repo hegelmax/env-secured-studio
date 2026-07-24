@@ -14,5 +14,6 @@
     <ProjectReference Include="..\..\src\EnvSecured.Crypto\EnvSecured.Crypto.csproj" />
     <ProjectReference Include="..\..\src\EnvSecured.WinForms\EnvSecured.WinForms.csproj" />
     <Reference Include="System.Web.Extensions" />
+    <Reference Include="System.Windows.Forms" />
   </ItemGroup>
 </Project>

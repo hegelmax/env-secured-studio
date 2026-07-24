@@ -11,13 +11,16 @@ using EnvSecured.Crypto;
 
 namespace EnvSecured.WinForms.Cli
 {
-    internal static class CliRunner
+    internal static partial class CliRunner
     {
         private static readonly VaultFileService VaultFileService = new VaultFileService();
         private static readonly ProjectService ProjectService = new ProjectService();
         private static readonly EffectiveConfigService EffectiveConfigService = new EffectiveConfigService();
         private static readonly ValidationService ValidationService = new ValidationService();
         private static readonly CryptoService CryptoService = new CryptoService();
+        private static readonly VaultProtectionService VaultProtectionService = new VaultProtectionService();
+        private static readonly GrantService GrantService = new GrantService();
+        private static readonly TokenScopePolicyService TokenScopePolicyService = new TokenScopePolicyService();
         private static readonly ProjectVaultTransformService VaultTransformService = new ProjectVaultTransformService();
 
         public static bool IsCliRequest(string[] args)
@@ -34,9 +37,45 @@ namespace EnvSecured.WinForms.Cli
                 if (args == null) args = new string[0];
                 if (args.Length > 0 && Same(args[0], "cli")) args = args.Skip(1).ToArray();
 
-                if (args.Length == 0 || Has(args, "--help") || Has(args, "-h"))
+                if (args.Length == 0)
                 {
                     PrintHelp();
+                    return 0;
+                }
+
+                if (Same(args[0], "--help") || Same(args[0], "-h"))
+                {
+                    var topic = args.Length > 1 ? args[1].Trim().ToLowerInvariant() : string.Empty;
+                    if (string.IsNullOrWhiteSpace(topic))
+                    {
+                        PrintHelpOverview();
+                        return 0;
+                    }
+                    if (topic == "commands")
+                    {
+                        PrintHelp();
+                        return 0;
+                    }
+                    if (topic == "docs")
+                    {
+                        PrintFullDocs();
+                        return 0;
+                    }
+                    Error("Unknown help topic: " + topic);
+                    PrintHelpOverview();
+                    return 2;
+                }
+
+                if (Has(args, "--help") || Has(args, "-h"))
+                {
+                    var helpCommand = args[0].ToLowerInvariant();
+                    if (!IsKnownCommand(helpCommand))
+                    {
+                        Error("Unknown command: " + helpCommand);
+                        PrintHelp();
+                        return 2;
+                    }
+                    PrintCommandHelp(helpCommand);
                     return 0;
                 }
 
@@ -46,12 +85,31 @@ namespace EnvSecured.WinForms.Cli
                 {
                     case "new": return NewProject(options);
                     case "save-as": return SaveAs(options);
+                    case "migrate": return MigrateVault(options);
                     case "merge": return WithProjectSave(options, p => MergeVaults(p, options));
                     case "split": return SplitVault(options);
                     case "info": return WithProject(options, p => PrintInfo(p));
                     case "validate": return WithProject(options, p => Validate(p));
                     case "list": return WithProject(options, p => List(p, options));
-                    case "get": return WithProject(options, p => GetValue(p, options), true);
+                    case "get": return WithProject(options, p => GetValue(p, options), true, true);
+                    case "variable-show":
+                    case "show-variable": return WithProject(options, p => ShowVariable(p, options));
+                    case "token-list": return WithProject(options, p => ListTokens(p, options));
+                    case "token-show": return WithProject(options, p => ShowToken(p, options));
+                    case "token-create": return WithProjectSave(options, p => CreateToken(p, options));
+                    case "token-create-defaults": return WithProjectSave(options, p => CreateDefaultTokens(p, options));
+                    case "token-rotate": return WithProjectSave(options, p => RotateToken(p, options));
+                    case "token-revoke": return WithProjectSave(options, p => RevokeToken(p, options));
+                    case "token-delete": return WithProjectSave(options, p => DeleteToken(p, options));
+                    case "sync-list": return WithProject(options, p => ListSyncProviders(p, options));
+                    case "sync-preview": return WithProject(options, p => SyncGitHub(p, options, false));
+                    case "sync-push": return WithProject(options, p => SyncGitHub(p, options, true));
+                    case "sync-provider-add": return WithProjectSave(options, p => AddSyncProvider(p, options));
+                    case "sync-provider-edit": return WithProjectSave(options, p => EditSyncProvider(p, options));
+                    case "sync-provider-delete": return WithProjectSave(options, p => DeleteSyncProvider(p, options));
+                    case "sync-provider-init": return WithProjectSave(options, p => InitializeSyncProvider(p, options));
+                    case "sync-key-rotate": return WithProjectSave(options, p => RotateSyncProviderKey(p, options));
+                    case "sync": PrintSyncHelp(); return 0;
                     case "add-service": return WithProjectSave(options, p => AddService(p, options));
                     case "edit-service": return WithProjectSave(options, p => EditService(p, options));
                     case "delete-service": return WithProjectSave(options, p => DeleteService(p, options));
@@ -73,7 +131,7 @@ namespace EnvSecured.WinForms.Cli
                     case "auto-assign": return WithProjectSave(options, p => AutoAssignContracts(p, options));
                     case "compact-values": return WithProjectSave(options, p => CompactValues(p));
                     case "export":
-                    case "render": return WithProjectPath(options, (p, f) => ExportFiles(p, options, f), true);
+                    case "render": return WithProjectPath(options, (p, f) => ExportFiles(p, options, f), true, true);
                     default:
                         Error("Unknown command: " + command);
                         PrintHelp();
@@ -94,12 +152,31 @@ namespace EnvSecured.WinForms.Cli
             {
                 case "new":
                 case "save-as":
+                case "migrate":
                 case "merge":
                 case "split":
                 case "info":
                 case "validate":
                 case "list":
                 case "get":
+                case "variable-show":
+                case "show-variable":
+                case "token-list":
+                case "token-show":
+                case "token-create":
+                case "token-create-defaults":
+                case "token-rotate":
+                case "token-revoke":
+                case "token-delete":
+                case "sync-list":
+                case "sync-preview":
+                case "sync-push":
+                case "sync-provider-add":
+                case "sync-provider-edit":
+                case "sync-provider-delete":
+                case "sync-provider-init":
+                case "sync-key-rotate":
+                case "sync":
                 case "add-service":
                 case "edit-service":
                 case "delete-service":
@@ -173,6 +250,24 @@ namespace EnvSecured.WinForms.Cli
                 Console.WriteLine("Saved copy " + targetFullPath);
             }
 
+            return 0;
+        }
+
+        private static int MigrateVault(Dictionary<string, string> options)
+        {
+            var file = Required(options, "file");
+            var json = File.ReadAllText(file);
+            if (VaultFileService.IsV2(json))
+            {
+                Console.WriteLine("Vault is already EnvSecured.Vault v2.");
+                return 0;
+            }
+            var backup = file + ".v1.bak";
+            if (!File.Exists(backup)) File.Copy(file, backup, false);
+            var project = LoadProject(file, options);
+            SaveProject(project, file, options);
+            VaultFileService.DeleteRecoveryBackup(file);
+            Console.WriteLine("Migrated vault to EnvSecured.Vault v2. Legacy backup: " + backup);
             return 0;
         }
 
@@ -258,9 +353,11 @@ namespace EnvSecured.WinForms.Cli
             return 0;
         }
 
-        private static int WithProject(Dictionary<string, string> options, Func<ProjectModel, int> action, bool cliExport = false)
+        private static int WithProject(Dictionary<string, string> options, Func<ProjectModel, int> action, bool cliExport = false, bool allowToken = false)
         {
             var file = Required(options, "file");
+            if (!allowToken && !string.IsNullOrWhiteSpace(ReadTokenSecret(options)))
+                throw new UnauthorizedAccessException("Access tokens can be used only with get and export/render commands.");
             if (cliExport)
             {
                 RequireExplicitPasswordForCliExport(file, options);
@@ -269,9 +366,11 @@ namespace EnvSecured.WinForms.Cli
             return action(project);
         }
 
-        private static int WithProjectPath(Dictionary<string, string> options, Func<ProjectModel, string, int> action, bool cliExport = false)
+        private static int WithProjectPath(Dictionary<string, string> options, Func<ProjectModel, string, int> action, bool cliExport = false, bool allowToken = false)
         {
             var file = Required(options, "file");
+            if (!allowToken && !string.IsNullOrWhiteSpace(ReadTokenSecret(options)))
+                throw new UnauthorizedAccessException("Access tokens can be used only with get and export/render commands.");
             if (cliExport)
             {
                 RequireExplicitPasswordForCliExport(file, options);
@@ -283,6 +382,8 @@ namespace EnvSecured.WinForms.Cli
         private static int WithProjectSave(Dictionary<string, string> options, Func<ProjectModel, int> action)
         {
             var file = Required(options, "file");
+            if (!string.IsNullOrWhiteSpace(ReadTokenSecret(options)))
+                throw new UnauthorizedAccessException("Access tokens cannot modify the vault.");
             var project = LoadProject(file, options);
             var code = action(project);
             if (code == 0)
@@ -340,8 +441,97 @@ namespace EnvSecured.WinForms.Cli
 
             foreach (var v in project.Variables.OrderBy(v => v.SortOrder).ThenBy(v => v.Key))
             {
-                Console.WriteLine($"{v.Key}\tsecret={v.IsSecret}\tsharedSecret={v.AllowSharedSecret}\trequired={IsRequired(project, v.Id)}\tallowNull={v.AllowNull}\tallowBlank={v.AllowBlank}");
+                var service = FindService(project, Get(options, "service"));
+                var scope = service == null ? null : project.Contracts.FirstOrDefault(c => c.VariableId == v.Id && c.ServiceId == service.Id);
+                Console.WriteLine($"{v.Key}\tsecret={v.IsSecret}\tsharedSecret={v.AllowSharedSecret}\tvisible={scope?.VisibleToService == true}\toverride={scope?.AllowOverride == true}\texport={scope != null && !scope.Excluded}\tsync={ProjectService.IsContractSyncEnabled(scope)}\trequired={scope?.Required == true}\tallowNull={v.AllowNull}\tallowBlank={v.AllowBlank}");
             }
+            return 0;
+        }
+
+        private static int ShowVariable(ProjectModel project, Dictionary<string, string> options)
+        {
+            var variable = FindVariable(project, Required(options, "key")) ?? throw new InvalidOperationException("Variable not found.");
+            var showSecrets = Flag(options, "show-secrets");
+            var service = ResolveOptionalService(project, Get(options, "service"));
+            var environment = ResolveOptionalEnvironment(project, Get(options, "env"));
+            var ownerScope = project.Contracts.FirstOrDefault(c => c.VariableId == variable.Id &&
+                string.Equals(c.ServiceId, variable.OwnerServiceId, StringComparison.Ordinal));
+            var effective = service != null || environment != null
+                ? EffectiveConfigService.BuildRawValue(project, variable, service?.Id, environment?.Id)
+                : null;
+            var result = new
+            {
+                id = variable.Id,
+                key = variable.Key,
+                description = variable.Description,
+                type = variable.Type.ToString(),
+                isSecret = variable.IsSecret,
+                allowSharedSecret = variable.AllowSharedSecret,
+                allowNull = variable.AllowNull,
+                allowBlank = variable.AllowBlank,
+                isActive = variable.IsActive,
+                demo = new { value = variable.DemoValue, comment = variable.DemoComment },
+                groupName = variable.GroupName,
+                ownerServiceId = variable.OwnerServiceId,
+                visible = ownerScope?.VisibleToService ?? true,
+                allowOverride = ownerScope?.AllowOverride ?? true,
+                export = ownerScope != null && !ownerScope.Excluded,
+                sync = ProjectService.IsContractSyncEnabled(ownerScope),
+                required = ownerScope?.Required == true,
+                generator = variable.IsGenerated ? new
+                {
+                    type = variable.GeneratorType,
+                    length = variable.GeneratorLength,
+                    scope = variable.GeneratorScope,
+                    mode = variable.GeneratorMode
+                } : null,
+                sortOrder = variable.SortOrder,
+                values = project.Values.Where(v => v.VariableId == variable.Id &&
+                    (string.IsNullOrWhiteSpace(variable.OwnerServiceId)
+                        ? v.Scope == ValueScope.Global || v.Scope == ValueScope.Environment
+                        : v.ServiceId == variable.OwnerServiceId))
+                    .Select(v => new
+                    {
+                        id = v.Id,
+                        environmentId = v.EnvironmentId,
+                        value = CliDisplayValue(variable, v.Value, showSecrets),
+                        encrypted = v.IsEncrypted,
+                        notes = v.Notes,
+                        updatedAt = v.UpdatedAt
+                    }).ToList(),
+                serviceScopes = project.Contracts.Where(c => c.VariableId == variable.Id && c.ServiceId != variable.OwnerServiceId)
+                    .OrderBy(c => c.SortOrder)
+                    .Select(c => new
+                    {
+                        serviceId = c.ServiceId,
+                        visible = c.VisibleToService,
+                        allowOverride = c.AllowOverride,
+                        export = !c.Excluded,
+                        sync = ProjectService.IsContractSyncEnabled(c),
+                        required = c.Required,
+                        values = project.Values.Where(v => v.VariableId == variable.Id && v.ServiceId == c.ServiceId)
+                            .Select(v => new
+                            {
+                                id = v.Id,
+                                environmentId = v.EnvironmentId,
+                                value = CliDisplayValue(variable, v.Value, showSecrets),
+                                encrypted = v.IsEncrypted,
+                                notes = v.Notes,
+                                updatedAt = v.UpdatedAt
+                            }).ToList()
+                    }).ToList(),
+                effective = effective == null ? null : new
+                {
+                    serviceId = service?.Id,
+                    environmentId = environment?.Id,
+                    value = CliDisplayValue(variable, effective.Value, showSecrets),
+                    sourceScope = effective.SourceScope?.ToString(),
+                    sourceServiceId = effective.SourceServiceId,
+                    sourceEnvironmentId = effective.SourceEnvironmentId,
+                    updatedAt = effective.SourceUpdatedAt
+                }
+            };
+            Console.WriteLine(new JavaScriptSerializer { MaxJsonLength = int.MaxValue }.Serialize(result));
             return 0;
         }
 
@@ -362,6 +552,22 @@ namespace EnvSecured.WinForms.Cli
 
             var service = ResolveOptionalService(project, Get(options, "service"));
             var environment = ResolveOptionalEnvironment(project, Get(options, "env"));
+            var tokenSecret = ReadTokenSecret(options);
+            if (!string.IsNullOrWhiteSpace(tokenSecret))
+            {
+                if (service == null || environment == null)
+                {
+                    Error("Token reads require --service and --env.");
+                    return 1;
+                }
+                var token = VaultProtectionService.UnlockForToken(project, tokenSecret, service.Id, environment.Id, "Read");
+                if (!GrantService.Allows(token.Grants, service.Id, environment.Id, variable.Key, "Read") ||
+                    !ProjectService.IsVariableVisibleToService(project, variable, service.Id))
+                {
+                    Error("Token is not authorized to read " + variable.Key + " for this target.");
+                    return 1;
+                }
+            }
             var calculated = GetValueCalculatedMode(options);
             var effective = calculated
                 ? EffectiveConfigService.Build(project, service?.Id, environment?.Id).FirstOrDefault(x => x.Variable.Id == variable.Id)
@@ -399,6 +605,219 @@ namespace EnvSecured.WinForms.Cli
             return 0;
         }
 
+        private static int ListTokens(ProjectModel project, Dictionary<string, string> options)
+        {
+            foreach (var token in project.AccessTokens.OrderBy(x => x.Id, StringComparer.Ordinal))
+            {
+                Console.WriteLine($"{token.Id}\tname={token.Name}\ttype={token.Type}\tservice={TokenScopePolicyService.ResolveServiceId(token) ?? string.Empty}\tenvironment={TokenScopePolicyService.ResolveEnvironmentId(token) ?? string.Empty}\tstatus={token.Status}\tversion={token.Version}\texpires={token.ExpiresAt ?? string.Empty}\tgrants={string.Join(";", token.Grants)}");
+            }
+            return 0;
+        }
+
+        private static int ShowToken(ProjectModel project, Dictionary<string, string> options)
+        {
+            var token = FindToken(project, Required(options, "id"));
+            if (GetValueJsonOutput(options))
+            {
+                Console.WriteLine(new JavaScriptSerializer().Serialize(new
+                {
+                    id = token.Id,
+                    name = token.Name,
+                    type = token.Type,
+                    serviceId = TokenScopePolicyService.ResolveServiceId(token),
+                    environmentId = TokenScopePolicyService.ResolveEnvironmentId(token),
+                    version = token.Version,
+                    status = token.Status,
+                    grants = token.Grants,
+                    createdAt = token.CreatedAt,
+                    rotatedAt = token.RotatedAt,
+                    expiresAt = token.ExpiresAt
+                }));
+                return 0;
+            }
+            Console.WriteLine("Id: " + token.Id);
+            Console.WriteLine("Name: " + token.Name);
+            Console.WriteLine("Type: " + token.Type);
+            Console.WriteLine("Service: " + (TokenScopePolicyService.ResolveServiceId(token) ?? string.Empty));
+            Console.WriteLine("Environment: " + (TokenScopePolicyService.ResolveEnvironmentId(token) ?? string.Empty));
+            Console.WriteLine("Status: " + token.Status);
+            Console.WriteLine("Version: " + token.Version);
+            Console.WriteLine("Expires: " + (token.ExpiresAt ?? string.Empty));
+            foreach (var grant in token.Grants) Console.WriteLine("Grant: " + grant);
+            return 0;
+        }
+
+        private static int CreateToken(ProjectModel project, Dictionary<string, string> options)
+        {
+            var serviceOption = Get(options, "service");
+            var environmentOption = Get(options, "env");
+            var serviceId = serviceOption == null ? null : (FindService(project, serviceOption) ?? throw new InvalidOperationException("Service not found.")).Id;
+            var environmentId = environmentOption == null ? null : (FindEnvironment(project, environmentOption) ?? throw new InvalidOperationException("Environment not found.")).Id;
+            var type = Get(options, "type");
+            if (string.IsNullOrWhiteSpace(type))
+            {
+                type = serviceId != null && environmentId != null ? "ServiceEnvironment" :
+                    serviceId != null ? "Service" : environmentId != null ? "Environment" : "Custom";
+            }
+            type = TokenScopePolicyService.NormalizeType(type);
+            if ((type == "Service" || type == "ServiceEnvironment") && serviceId == null)
+                throw new InvalidOperationException(type + " token requires --service.");
+            if ((type == "Environment" || type == "ServiceEnvironment") && environmentId == null)
+                throw new InvalidOperationException(type + " token requires --env.");
+            var id = Get(options, "id");
+            if (string.IsNullOrWhiteSpace(id)) id = TokenScopePolicyService.DefaultId(type, serviceId, environmentId);
+            if (string.IsNullOrWhiteSpace(id)) throw new InvalidOperationException("Custom token requires --id.");
+            id = id.Trim().ToLowerInvariant();
+            var explicitGrants = Get(options, "grants");
+            var defaultGrant = TokenScopePolicyService.DefaultGrant(type, serviceId, environmentId);
+            var grantRules = !string.IsNullOrWhiteSpace(explicitGrants)
+                ? explicitGrants.Split(new[] { ';' }, StringSplitOptions.RemoveEmptyEntries).Select(x => x.Trim()).ToList()
+                : !string.IsNullOrWhiteSpace(defaultGrant) ? new List<string> { defaultGrant } : TokenGrantRules(options);
+            var defaultName = type == "Service" ? "Service: " + serviceId :
+                type == "Environment" ? "Environment: " + environmentId :
+                type == "ServiceEnvironment" ? serviceId + " / " + environmentId : id;
+            var key = EnsureCrypto(project, options);
+            try
+            {
+                project.Settings = project.Settings ?? new ProjectSettings();
+                project.Settings.EncryptionMode = "AllValues";
+                project.Settings.EncryptAllValues = true;
+                var result = VaultProtectionService.CreateToken(project, key, id, Get(options, "name") ?? defaultName,
+                    type, grantRules, Get(options, "expires"), serviceId, environmentId);
+                Console.WriteLine(result.Secret);
+                return 0;
+            }
+            finally
+            {
+                ClearKey(key);
+            }
+        }
+
+        private static int RotateToken(ProjectModel project, Dictionary<string, string> options)
+        {
+            var token = FindToken(project, Required(options, "id"));
+            var key = EnsureCrypto(project, options);
+            try
+            {
+                Console.WriteLine(VaultProtectionService.RotateToken(project, key, token));
+                return 0;
+            }
+            finally
+            {
+                ClearKey(key);
+            }
+        }
+
+        private static int CreateDefaultTokens(ProjectModel project, Dictionary<string, string> options)
+        {
+            var key = EnsureCrypto(project, options);
+            try
+            {
+                project.Settings = project.Settings ?? new ProjectSettings();
+                project.Settings.EncryptionMode = "AllValues";
+                project.Settings.EncryptAllValues = true;
+                var created = 0;
+                foreach (var service in project.Services.Where(x => x.IsActive))
+                {
+                    var id = "service-" + service.Id;
+                    if (project.AccessTokens.Any(x => string.Equals(x.Id, id, StringComparison.Ordinal))) continue;
+                    var result = VaultProtectionService.CreateToken(project, key, id, "Service: " + service.Name,
+                        "Service", new[] { service.Id + ".*.*.Read|BatchExport" }, null, service.Id, null);
+                    Console.WriteLine(id + "\t" + result.Secret);
+                    created++;
+                }
+                foreach (var environment in project.Environments.Where(x => x.IsActive))
+                {
+                    var id = "environment-" + environment.Id;
+                    if (project.AccessTokens.Any(x => string.Equals(x.Id, id, StringComparison.Ordinal))) continue;
+                    var result = VaultProtectionService.CreateToken(project, key, id, "Environment: " + environment.Name,
+                        "Environment", new[] { "*." + environment.Id + ".*.Read|BatchExport" }, null, null, environment.Id);
+                    Console.WriteLine(id + "\t" + result.Secret);
+                    created++;
+                }
+                Console.WriteLine("Created " + created + " default token(s).");
+                return 0;
+            }
+            finally
+            {
+                ClearKey(key);
+            }
+        }
+
+        private static void CreateDefaultServiceToken(ProjectModel project, ServiceModel service, Dictionary<string, string> options)
+        {
+            var id = "service-" + service.Id;
+            if (project.AccessTokens.Any(x => string.Equals(x.Id, id, StringComparison.Ordinal))) return;
+            var key = EnsureCrypto(project, options);
+            try
+            {
+                project.Settings.EncryptionMode = "AllValues";
+                project.Settings.EncryptAllValues = true;
+                var result = VaultProtectionService.CreateToken(project, key, id, "Service: " + service.Name,
+                    "Service", new[] { service.Id + ".*.*.Read|BatchExport" }, null, service.Id, null);
+                Console.WriteLine("Default token " + id + "\t" + result.Secret);
+            }
+            finally
+            {
+                ClearKey(key);
+            }
+        }
+
+        private static void CreateDefaultEnvironmentToken(ProjectModel project, EnvironmentModel environment, Dictionary<string, string> options)
+        {
+            var id = "environment-" + environment.Id;
+            if (project.AccessTokens.Any(x => string.Equals(x.Id, id, StringComparison.Ordinal))) return;
+            var key = EnsureCrypto(project, options);
+            try
+            {
+                project.Settings.EncryptionMode = "AllValues";
+                project.Settings.EncryptAllValues = true;
+                var result = VaultProtectionService.CreateToken(project, key, id, "Environment: " + environment.Name,
+                    "Environment", new[] { "*." + environment.Id + ".*.Read|BatchExport" }, null, null, environment.Id);
+                Console.WriteLine("Default token " + id + "\t" + result.Secret);
+            }
+            finally
+            {
+                ClearKey(key);
+            }
+        }
+
+        private static int RevokeToken(ProjectModel project, Dictionary<string, string> options)
+        {
+            var token = FindToken(project, Required(options, "id"));
+            token.Status = "Revoked";
+            Console.WriteLine("Revoked " + token.Id);
+            return 0;
+        }
+
+        private static int DeleteToken(ProjectModel project, Dictionary<string, string> options)
+        {
+            var token = FindToken(project, Required(options, "id"));
+            project.AccessTokens.Remove(token);
+            Console.WriteLine("Deleted " + token.Id);
+            return 0;
+        }
+
+        private static AccessTokenModel FindToken(ProjectModel project, string id)
+        {
+            return project.AccessTokens.FirstOrDefault(x => string.Equals(x.Id, id, StringComparison.OrdinalIgnoreCase)) ??
+                throw new InvalidOperationException("Token not found: " + id);
+        }
+
+        private static List<string> TokenGrantRules(Dictionary<string, string> options)
+        {
+            var explicitRules = Get(options, "grants");
+            if (!string.IsNullOrWhiteSpace(explicitRules))
+            {
+                return explicitRules.Split(new[] { ';' }, StringSplitOptions.RemoveEmptyEntries).Select(x => x.Trim()).ToList();
+            }
+            var service = Get(options, "service") ?? "*";
+            var environment = Get(options, "env") ?? "*";
+            if (service == "*" && environment == "*")
+                throw new InvalidOperationException("Specify --grants or at least one of --service/--env.");
+            return new List<string> { service + "." + environment + ".*.Read|BatchExport" };
+        }
+
         private static bool GetValueJsonOutput(Dictionary<string, string> options)
         {
             if (Flag(options, "json")) return true;
@@ -429,7 +848,7 @@ namespace EnvSecured.WinForms.Cli
             if (project.Services.Any(s => s.Id == id || Same(s.Name, name))) throw new InvalidOperationException("Service already exists.");
             var outputFolder = options.ContainsKey("folder") ? options["folder"].Trim() : id;
             EnsureUniqueOutputFolder(project, null, outputFolder);
-            project.Services.Add(new ServiceModel
+            var service = new ServiceModel
             {
                 Id = id,
                 Name = id,
@@ -439,7 +858,10 @@ namespace EnvSecured.WinForms.Cli
                 AllowSharedVariablesWithoutContract = !Flag(options, "strict-contracts"),
                 SortOrder = project.Services.Count * 10,
                 IsActive = true
-            });
+            };
+            project.Services.Add(service);
+            if (!options.ContainsKey("default-token") || ParseBool(options["default-token"]))
+                CreateDefaultServiceToken(project, service, options);
             Console.WriteLine("Added service " + id);
             return 0;
         }
@@ -476,6 +898,9 @@ namespace EnvSecured.WinForms.Cli
             project.Contracts.RemoveAll(c => c.ServiceId == service.Id);
             project.Values.RemoveAll(v => v.ServiceId == service.Id);
             project.Settings?.OutputTargets?.RemoveAll(t => t.ServiceId == service.Id);
+            project.AccessTokens.RemoveAll(t =>
+                (t.Type == "Service" || t.Type == "ServiceEnvironment") &&
+                TokenScopePolicyService.ResolveServiceId(t) == service.Id);
             Console.WriteLine("Deleted service " + service.Id);
             return 0;
         }
@@ -485,7 +910,10 @@ namespace EnvSecured.WinForms.Cli
             var name = Required(options, "name");
             var id = Get(options, "id") ?? Slug(name);
             if (project.Environments.Any(e => e.Id == id || Same(e.Name, name))) throw new InvalidOperationException("Environment already exists.");
-            project.Environments.Add(new EnvironmentModel { Id = id, Name = id, DisplayName = name, SortOrder = project.Environments.Count * 10, IsActive = true });
+            var environment = new EnvironmentModel { Id = id, Name = id, DisplayName = name, SortOrder = project.Environments.Count * 10, IsActive = true };
+            project.Environments.Add(environment);
+            if (!options.ContainsKey("default-token") || ParseBool(options["default-token"]))
+                CreateDefaultEnvironmentToken(project, environment, options);
             Console.WriteLine("Added environment " + id);
             return 0;
         }
@@ -512,6 +940,9 @@ namespace EnvSecured.WinForms.Cli
             project.Environments.Remove(env);
             project.Values.RemoveAll(v => v.EnvironmentId == env.Id);
             project.Settings?.OutputTargets?.RemoveAll(t => t.EnvironmentId == env.Id);
+            project.AccessTokens.RemoveAll(t =>
+                (t.Type == "Environment" || t.Type == "ServiceEnvironment") &&
+                TokenScopePolicyService.ResolveEnvironmentId(t) == env.Id);
             Console.WriteLine("Deleted environment " + env.Id);
             return 0;
         }
@@ -697,7 +1128,9 @@ namespace EnvSecured.WinForms.Cli
             var service = FindService(project, Required(options, "service")) ?? throw new InvalidOperationException("Service not found.");
             var visible = options.ContainsKey("visible") ? ParseBool(options["visible"]) : options.ContainsKey("share") ? ParseBool(options["share"]) : true;
             var allowOverride = options.ContainsKey("override") ? ParseBool(options["override"]) : true;
+            var requestedSync = options.ContainsKey("sync") ? (bool?)ParseBool(options["sync"]) : null;
             if (enabled && !visible) throw new InvalidOperationException("A service cannot export a variable that is not in its scope.");
+            if (requestedSync == true && !visible) throw new InvalidOperationException("A service cannot sync a variable that is not in its scope.");
             if (!visible && ProjectService.IsVariableVisibleToService(project, variable, service.Id))
             {
                 var references = CountScopeInterpolationReferences(project, variable, service.Id);
@@ -715,20 +1148,23 @@ namespace EnvSecured.WinForms.Cli
                     contract.VisibleToService = visible;
                     contract.AllowOverride = visible && allowOverride;
                     contract.ShareWithOtherServices = visible;
+                    contract.Sync = requestedSync ?? contract.Sync ?? true;
                 }
             }
             else
             {
                 var contract = project.Contracts.FirstOrDefault(c => c.VariableId == variable.Id && c.ServiceId == service.Id);
-                if (ProjectService.HasGlobalValue(project, variable.Id) || !visible || !allowOverride)
+                var sync = requestedSync ?? ProjectService.IsContractSyncEnabled(contract);
+                if (ProjectService.HasGlobalValue(project, variable.Id) || !visible || !allowOverride || sync)
                 {
                     if (contract == null)
                     {
-                        project.Contracts.Add(new VariableContractModel { Id = ProjectService.NewId(), VariableId = variable.Id, ServiceId = service.Id, Excluded = true, Required = false, VisibleToService = visible, AllowOverride = visible && allowOverride, ShareWithOtherServices = visible, SortOrder = project.Contracts.Count * 10 });
+                        project.Contracts.Add(new VariableContractModel { Id = ProjectService.NewId(), VariableId = variable.Id, ServiceId = service.Id, Excluded = true, Sync = sync, Required = false, VisibleToService = visible, AllowOverride = visible && allowOverride, ShareWithOtherServices = visible, SortOrder = project.Contracts.Count * 10 });
                     }
                     else
                     {
                         contract.Excluded = true;
+                        contract.Sync = sync;
                         contract.Required = false;
                         contract.VisibleToService = visible;
                         contract.AllowOverride = visible && allowOverride;
@@ -902,6 +1338,21 @@ namespace EnvSecured.WinForms.Cli
             var format = NormalizeOutputFormat(Get(options, "format") ?? project.Settings.OutputFormat);
             var extension = Get(options, "ext") ?? (options.ContainsKey("format") ? DefaultOutputExtension(format) : GetProjectExtension(project, format));
             var targets = ResolveExportTargets(project, options);
+            AccessTokenModel accessToken = null;
+            var tokenSecret = ReadTokenSecret(options);
+            if (!string.IsNullOrWhiteSpace(tokenSecret))
+            {
+                if (targets.Any(t => t.Service == null || t.Environment == null))
+                    throw new InvalidOperationException("Token batch export requires concrete --service and --env targets; global targets are not allowed.");
+
+                foreach (var target in targets.GroupBy(t => t.Service.Id + "\0" + t.Environment.Id).Select(g => g.First()))
+                {
+                    var unlocked = VaultProtectionService.UnlockForToken(project, tokenSecret, target.Service.Id, target.Environment.Id, "BatchExport");
+                    if (accessToken != null && !string.Equals(accessToken.Id, unlocked.Id, StringComparison.Ordinal))
+                        throw new UnauthorizedAccessException("Export targets were unlocked by different tokens.");
+                    accessToken = unlocked;
+                }
+            }
             var singleFile = format != "CONFIG" && (Flag(options, "single-file") || (!options.ContainsKey("single-file") && project.Settings.OutputStructuredSingleFile));
             var data = options.ContainsKey("data") ? ParseBool(options["data"]) : project.Settings.OutputDataFiles;
             var manifest = options.ContainsKey("manifest") ? ParseBool(options["manifest"]) : project.Settings.OutputServiceManifest;
@@ -916,7 +1367,7 @@ namespace EnvSecured.WinForms.Cli
                 var path = BuildStructuredOutputPath(project, root, format, extension, Get(options, "single-file-mask"));
                 var directory = Path.GetDirectoryName(path);
                 if (!string.IsNullOrWhiteSpace(directory)) Directory.CreateDirectory(directory);
-                File.WriteAllText(path, FormatStructuredOutput(project, targets, format));
+                File.WriteAllText(path, FormatStructuredOutput(project, targets, format, accessToken));
                 Console.WriteLine(path);
                 rendered++;
             }
@@ -924,7 +1375,7 @@ namespace EnvSecured.WinForms.Cli
             {
                 foreach (var target in targets)
                 {
-                    var values = BuildOutputValues(project, target.Service, target.Environment);
+                    var values = BuildOutputValues(project, target.Service, target.Environment, accessToken);
                     var path = BuildOutputPath(project, target, root, format, extension, options);
                     var directory = Path.GetDirectoryName(path);
                     if (!string.IsNullOrWhiteSpace(directory)) Directory.CreateDirectory(directory);
@@ -935,7 +1386,7 @@ namespace EnvSecured.WinForms.Cli
             }
             if (manifest)
             {
-                rendered += ExportServiceManifestFiles(project, targets, root, Get(options, "manifest-mask"), manifestValueMode);
+                rendered += ExportServiceManifestFiles(project, targets, root, Get(options, "manifest-mask"), manifestValueMode, accessToken);
             }
             Console.WriteLine("Rendered " + rendered + " file(s).");
             return 0;
@@ -980,7 +1431,7 @@ namespace EnvSecured.WinForms.Cli
             }
         }
 
-        private static int ExportServiceManifestFiles(ProjectModel project, List<OutputTarget> targets, string outputRoot, string maskOverride, string valueMode)
+        private static int ExportServiceManifestFiles(ProjectModel project, List<OutputTarget> targets, string outputRoot, string maskOverride, string valueMode, AccessTokenModel accessToken = null)
         {
             var rendered = 0;
             foreach (var service in targets
@@ -991,7 +1442,8 @@ namespace EnvSecured.WinForms.Cli
                 .OrderBy(s => s.SortOrder)
                 .ThenBy(s => s.Name))
             {
-                var content = BuildServiceManifestContent(project, service, valueMode);
+                var environments = targets.Where(t => t.Service?.Id == service.Id && t.Environment != null).Select(t => t.Environment).GroupBy(e => e.Id).Select(g => g.First()).ToList();
+                var content = BuildServiceManifestContent(project, service, valueMode, accessToken, environments);
                 var path = BuildServiceManifestPath(project, service, outputRoot, maskOverride);
                 var directory = Path.GetDirectoryName(path);
                 if (!string.IsNullOrWhiteSpace(directory)) Directory.CreateDirectory(directory);
@@ -1048,19 +1500,40 @@ namespace EnvSecured.WinForms.Cli
                 .ToList();
         }
 
-        private static Dictionary<string, string> BuildOutputValues(ProjectModel project, ServiceModel service, EnvironmentModel environment)
+        private static Dictionary<string, string> BuildOutputValues(ProjectModel project, ServiceModel service, EnvironmentModel environment, AccessTokenModel accessToken = null)
         {
             var effective = EffectiveConfigService.Build(project, service?.Id, environment?.Id).Where(x => !x.Missing);
             if (service != null)
             {
                 effective = effective.Where(x => ProjectService.IsVariableUsedByService(project, x.Variable.Id, service.Id));
             }
+            else
+            {
+                effective = effective.Where(x =>
+                    string.IsNullOrWhiteSpace(x.Variable.OwnerServiceId) &&
+                    ProjectService.IsVariableUsedByService(project, x.Variable.Id, null));
+            }
+            if (accessToken != null)
+            {
+                if (service == null || environment == null)
+                    throw new InvalidOperationException("Token batch export requires a concrete service and environment.");
+                effective = effective.Where(x =>
+                    GrantService.Allows(accessToken.Grants, service.Id, environment.Id, x.Variable.Key, "BatchExport") &&
+                    ProjectService.IsVariableVisibleToService(project, x.Variable, service.Id));
+            }
             return effective.OrderBy(x => x.Variable.SortOrder).ThenBy(x => x.Variable.Key).ToDictionary(x => x.Variable.Key, x => x.Value ?? string.Empty);
         }
 
-        private static string BuildServiceManifestContent(ProjectModel project, ServiceModel service, string valueMode)
+        private static string BuildServiceManifestContent(ProjectModel project, ServiceModel service, string valueMode, AccessTokenModel accessToken = null, List<EnvironmentModel> environments = null)
         {
-            return string.Join(Environment.NewLine, ProjectService.GetVariablesUsedByService(project, service.Id)
+            var variables = ProjectService.GetVariablesUsedByService(project, service.Id).AsEnumerable();
+            if (accessToken != null)
+            {
+                variables = variables.Where(v =>
+                    ProjectService.IsVariableVisibleToService(project, v, service.Id) &&
+                    (environments ?? new List<EnvironmentModel>()).Any(e => GrantService.Allows(accessToken.Grants, service.Id, e.Id, v.Key, "BatchExport")));
+            }
+            return string.Join(Environment.NewLine, variables
                 .Select(v => ManifestLine(v, valueMode)));
         }
 
@@ -1156,17 +1629,28 @@ namespace EnvSecured.WinForms.Cli
         {
             var json = File.ReadAllText(file);
             var serializer = new JavaScriptSerializer { MaxJsonLength = int.MaxValue };
+            var tokenSecret = ReadTokenSecret(options);
+            if (!string.IsNullOrWhiteSpace(tokenSecret))
+            {
+                if (TryReadEncryptedEnvelope(json, serializer, out _))
+                    throw new InvalidOperationException("Token access is not available for WholeJson vaults.");
+                var tokenProject = VaultFileService.Deserialize(json);
+                ProjectService.EnsureProjectCollections(tokenProject);
+                return tokenProject;
+            }
             if (TryReadEncryptedEnvelope(json, serializer, out var envelope))
             {
                 var key = DeriveKey(envelope.Crypto, options);
                 try
                 {
                     var projectJson = CryptoService.DecryptString(envelope.Payload, key);
-                    var project = serializer.Deserialize<ProjectModel>(projectJson);
+                    var project = VaultFileService.Deserialize(projectJson);
                     project.Crypto = envelope.Crypto;
                     ProjectService.EnsureProjectCollections(project);
+                    VaultProtectionService.VerifyIntegrity(project, key);
                     DecryptValues(project, key);
                     DecryptCliExportPolicy(project, key);
+                    DecryptSyncProviderSettings(project, key);
                     return project;
                 }
                 finally
@@ -1182,8 +1666,10 @@ namespace EnvSecured.WinForms.Cli
                 var key = DeriveKey(loaded.Crypto, options);
                 try
                 {
+                    VaultProtectionService.VerifyIntegrity(loaded, key);
                     DecryptValues(loaded, key);
                     DecryptCliExportPolicy(loaded, key);
+                    DecryptSyncProviderSettings(loaded, key);
                 }
                 finally
                 {
@@ -1199,6 +1685,7 @@ namespace EnvSecured.WinForms.Cli
 
         private static void RequireExplicitPasswordForCliExport(string file, Dictionary<string, string> options)
         {
+            if (!string.IsNullOrWhiteSpace(ReadTokenSecret(options))) return;
             if (HasExplicitPassword(options)) return;
             if (!ReadCliExportPasswordRequired(file)) return;
             throw new InvalidOperationException("CLI export for this project requires --password or ENVSECURED_PASSWORD.");
@@ -1213,7 +1700,7 @@ namespace EnvSecured.WinForms.Cli
                 return true;
             }
 
-            var project = serializer.Deserialize<ProjectModel>(json);
+            var project = VaultFileService.Deserialize(json);
             return project?.Settings?.CliExportPasswordRequiredPolicy != false;
         }
 
@@ -1228,9 +1715,21 @@ namespace EnvSecured.WinForms.Cli
                 !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("ENVSECURED_PASSWORD"));
         }
 
+        private static string ReadTokenSecret(Dictionary<string, string> options)
+        {
+            var direct = Get(options, "token");
+            if (!string.IsNullOrWhiteSpace(direct)) return direct.Trim();
+            var tokenFile = Get(options, "token-file");
+            if (!string.IsNullOrWhiteSpace(tokenFile)) return File.ReadAllText(tokenFile).Trim();
+            return Environment.GetEnvironmentVariable("ENVSECURED_TOKEN")?.Trim();
+        }
+
         private static bool ProjectHasEncryptedValues(ProjectModel project)
         {
-            return project.Values.Any(v => v.IsEncrypted && v.EncryptedValue != null);
+            return project.Values.Any(v => v.IsEncrypted && v.EncryptedValue != null) ||
+                project.Settings?.CliExportPasswordRequiredEncrypted != null ||
+                project.Sync?.Providers?.Any(p => p.EncryptedSettings != null) == true ||
+                !string.IsNullOrWhiteSpace(project.VaultIntegrity?.Tag);
         }
 
         private static void DecryptCliExportPolicy(ProjectModel project, byte[] key)
@@ -1245,6 +1744,20 @@ namespace EnvSecured.WinForms.Cli
             var value = CryptoService.DecryptString(project.Settings.CliExportPasswordRequiredEncrypted, key);
             project.Settings.CliExportPasswordRequired = string.Equals(value, "required:true:v1", StringComparison.Ordinal);
             project.Settings.CliExportPasswordRequiredPolicy = project.Settings.CliExportPasswordRequired;
+        }
+
+        private static void DecryptSyncProviderSettings(ProjectModel project, byte[] key)
+        {
+            if (project?.Sync?.Providers == null) return;
+            var serializer = new JavaScriptSerializer { MaxJsonLength = int.MaxValue };
+            foreach (var provider in project.Sync.Providers)
+            {
+                provider.Settings = provider.Settings ?? new Dictionary<string, string>();
+                if (provider.EncryptedSettings == null) continue;
+                var json = CryptoService.DecryptString(provider.EncryptedSettings, key);
+                provider.Settings = serializer.Deserialize<Dictionary<string, string>>(json) ??
+                    new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            }
         }
 
         private static void SaveProject(ProjectModel project, string file, Dictionary<string, string> options)
@@ -1263,7 +1776,9 @@ namespace EnvSecured.WinForms.Cli
                         value.IsEncrypted = false;
                         value.EncryptedValue = null;
                     }
-                    var envelope = new EncryptedProjectFile { Crypto = payloadProject.Crypto, Payload = CryptoService.EncryptString(serializer.Serialize(payloadProject), key) };
+                    EncryptSyncProviderSettingsForStorage(project, payloadProject, key);
+                    VaultProtectionService.ProtectIntegrity(payloadProject, key);
+                    var envelope = new EncryptedProjectFile { Crypto = payloadProject.Crypto, Payload = CryptoService.EncryptString(VaultFileService.Serialize(payloadProject), key) };
                     SaveText(serializer.Serialize(envelope), file);
                     return;
                 }
@@ -1274,25 +1789,18 @@ namespace EnvSecured.WinForms.Cli
             }
 
             var storage = Clone(project);
-            if (mode == "AllValues" || mode == "SecretsOnly")
+            var needsKey = mode == "AllValues" || mode == "SecretsOnly" || storage.AccessTokens.Count > 0 ||
+                storage.Sync?.Providers?.Count > 0 ||
+                (!string.IsNullOrWhiteSpace(storage.Crypto?.Salt) && storage.Crypto?.KeyCheck != null);
+            if (needsKey)
             {
                 var key = EnsureCrypto(storage, options);
                 try
                 {
-                    foreach (var value in storage.Values)
-                    {
-                        var variable = storage.Variables.FirstOrDefault(v => v.Id == value.VariableId);
-                        var encrypt = mode == "AllValues" || variable?.IsSecret == true;
-                        if (!encrypt)
-                        {
-                            value.IsEncrypted = false;
-                            value.EncryptedValue = null;
-                            continue;
-                        }
-                        value.EncryptedValue = CryptoService.EncryptString(value.Value ?? string.Empty, key);
-                        value.Value = null;
-                        value.IsEncrypted = true;
-                    }
+                    VaultProtectionService.EncryptValuesForStorage(storage, key, variable =>
+                        storage.AccessTokens.Count > 0 || mode == "AllValues" || (mode == "SecretsOnly" && variable?.IsSecret == true));
+                    EncryptSyncProviderSettingsForStorage(project, storage, key);
+                    VaultProtectionService.ProtectIntegrity(storage, key);
                 }
                 finally
                 {
@@ -1308,6 +1816,18 @@ namespace EnvSecured.WinForms.Cli
                 }
             }
             VaultFileService.Save(storage, file);
+        }
+
+        private static void EncryptSyncProviderSettingsForStorage(ProjectModel runtimeProject, ProjectModel storageProject, byte[] key)
+        {
+            if (runtimeProject?.Sync?.Providers == null || storageProject?.Sync?.Providers == null) return;
+            var serializer = new JavaScriptSerializer { MaxJsonLength = int.MaxValue };
+            foreach (var storageProvider in storageProject.Sync.Providers)
+            {
+                var runtimeProvider = runtimeProject.Sync.Providers.FirstOrDefault(p => string.Equals(p.Id, storageProvider.Id, StringComparison.Ordinal));
+                if (runtimeProvider?.Settings == null) continue;
+                storageProvider.EncryptedSettings = CryptoService.EncryptString(serializer.Serialize(runtimeProvider.Settings), key);
+            }
         }
 
         private static byte[] EnsureCrypto(ProjectModel project, Dictionary<string, string> options)
@@ -1385,11 +1905,7 @@ namespace EnvSecured.WinForms.Cli
 
         private static void DecryptValues(ProjectModel project, byte[] key)
         {
-            foreach (var value in project.Values.Where(v => v.IsEncrypted && v.EncryptedValue != null))
-            {
-                value.Value = CryptoService.DecryptString(value.EncryptedValue, key);
-                value.EncryptedValue = null;
-            }
+            VaultProtectionService.DecryptValuesForAdmin(project, key);
         }
 
         private static ProjectModel Clone(ProjectModel project)
@@ -1460,23 +1976,23 @@ namespace EnvSecured.WinForms.Cli
             return string.Join(Environment.NewLine, values.Select(p => $"{p.Key}={p.Value}"));
         }
 
-        private static string FormatStructuredOutput(ProjectModel project, List<OutputTarget> targets, string format)
+        private static string FormatStructuredOutput(ProjectModel project, List<OutputTarget> targets, string format, AccessTokenModel accessToken = null)
         {
-            if (format == "JSON") return new JavaScriptSerializer().Serialize(BuildStructuredOutputObject(project, targets));
-            if (format == "XML") return FormatStructuredXml(project, targets);
-            if (format == "YAML") return FormatStructuredYaml(project, targets);
-            if (format == "TOML") return FormatStructuredToml(project, targets);
-            return string.Join(Environment.NewLine, targets.SelectMany(target => BuildOutputValues(project, target.Service, target.Environment)).Select(pair => $"{pair.Key}={pair.Value}"));
+            if (format == "JSON") return new JavaScriptSerializer().Serialize(BuildStructuredOutputObject(project, targets, accessToken));
+            if (format == "XML") return FormatStructuredXml(project, targets, accessToken);
+            if (format == "YAML") return FormatStructuredYaml(project, targets, accessToken);
+            if (format == "TOML") return FormatStructuredToml(project, targets, accessToken);
+            return string.Join(Environment.NewLine, targets.SelectMany(target => BuildOutputValues(project, target.Service, target.Environment, accessToken)).Select(pair => $"{pair.Key}={pair.Value}"));
         }
 
-        private static Dictionary<string, object> BuildStructuredOutputObject(ProjectModel project, List<OutputTarget> targets)
+        private static Dictionary<string, object> BuildStructuredOutputObject(ProjectModel project, List<OutputTarget> targets, AccessTokenModel accessToken = null)
         {
             var result = new Dictionary<string, object>();
             var environments = new Dictionary<string, object>();
             var services = new Dictionary<string, object>();
             foreach (var target in targets)
             {
-                var values = BuildOutputValues(project, target.Service, target.Environment);
+                var values = BuildOutputValues(project, target.Service, target.Environment, accessToken);
                 if (target.Service == null && target.Environment == null) result["global"] = values;
                 else if (target.Service == null) environments[ExportEnvironmentName(target.Environment, "JSON")] = values;
                 else
@@ -1506,7 +2022,7 @@ namespace EnvSecured.WinForms.Cli
             return result;
         }
 
-        private static string FormatStructuredToml(ProjectModel project, List<OutputTarget> targets)
+        private static string FormatStructuredToml(ProjectModel project, List<OutputTarget> targets, AccessTokenModel accessToken = null)
         {
             var lines = new List<string>();
             foreach (var target in targets)
@@ -1520,19 +2036,19 @@ namespace EnvSecured.WinForms.Cli
                             : "services." + TomlPathSegment(ExportServiceName(target.Service, "TOML", false)) + ".environments." + TomlPathSegment(ExportEnvironmentName(target.Environment, "TOML"));
                 if (lines.Count > 0) lines.Add(string.Empty);
                 lines.Add("[" + table + "]");
-                lines.AddRange(BuildOutputValues(project, target.Service, target.Environment).Select(pair => TomlKey(pair.Key) + " = " + QuoteJson(pair.Value)));
+                lines.AddRange(BuildOutputValues(project, target.Service, target.Environment, accessToken).Select(pair => TomlKey(pair.Key) + " = " + QuoteJson(pair.Value)));
             }
             return string.Join(Environment.NewLine, lines);
         }
 
-        private static string FormatStructuredYaml(ProjectModel project, List<OutputTarget> targets)
+        private static string FormatStructuredYaml(ProjectModel project, List<OutputTarget> targets, AccessTokenModel accessToken = null)
         {
             var lines = new List<string>();
             var global = targets.FirstOrDefault(t => t.Service == null && t.Environment == null);
             if (global != null)
             {
                 lines.Add("global:");
-                AppendYamlValues(lines, BuildOutputValues(project, null, null), 2);
+                AppendYamlValues(lines, BuildOutputValues(project, null, null, accessToken), 2);
             }
 
             var environmentTargets = targets.Where(t => t.Service == null && t.Environment != null).ToList();
@@ -1542,7 +2058,7 @@ namespace EnvSecured.WinForms.Cli
                 foreach (var target in environmentTargets)
                 {
                     lines.Add("  " + YamlKey(ExportEnvironmentName(target.Environment, "YAML")) + ":");
-                    AppendYamlValues(lines, BuildOutputValues(project, null, target.Environment), 4);
+                    AppendYamlValues(lines, BuildOutputValues(project, null, target.Environment, accessToken), 4);
                 }
             }
 
@@ -1558,7 +2074,7 @@ namespace EnvSecured.WinForms.Cli
                     if (serviceGlobal != null)
                     {
                         lines.Add("    global:");
-                        AppendYamlValues(lines, BuildOutputValues(project, service, null), 6);
+                        AppendYamlValues(lines, BuildOutputValues(project, service, null, accessToken), 6);
                     }
 
                     var serviceEnvironmentTargets = serviceGroup.Where(t => t.Environment != null).ToList();
@@ -1568,7 +2084,7 @@ namespace EnvSecured.WinForms.Cli
                         foreach (var target in serviceEnvironmentTargets)
                         {
                             lines.Add("      " + YamlKey(ExportEnvironmentName(target.Environment, "YAML")) + ":");
-                            AppendYamlValues(lines, BuildOutputValues(project, service, target.Environment), 8);
+                            AppendYamlValues(lines, BuildOutputValues(project, service, target.Environment, accessToken), 8);
                         }
                     }
                 }
@@ -1576,7 +2092,7 @@ namespace EnvSecured.WinForms.Cli
             return string.Join(Environment.NewLine, lines);
         }
 
-        private static string FormatStructuredXml(ProjectModel project, List<OutputTarget> targets)
+        private static string FormatStructuredXml(ProjectModel project, List<OutputTarget> targets, AccessTokenModel accessToken = null)
         {
             var lines = new List<string> { "<?xml version=\"1.0\" encoding=\"utf-8\"?>", "<config>" };
             foreach (var target in targets)
@@ -1584,27 +2100,27 @@ namespace EnvSecured.WinForms.Cli
                 if (target.Service == null && target.Environment == null)
                 {
                     lines.Add("  <global>");
-                    AppendXmlValues(lines, BuildOutputValues(project, null, null), 4);
+                    AppendXmlValues(lines, BuildOutputValues(project, null, null, accessToken), 4);
                     lines.Add("  </global>");
                 }
                 else if (target.Service == null)
                 {
                     lines.Add($"  <environment name=\"{EscapeXml(ExportEnvironmentName(target.Environment, "XML"))}\">");
-                    AppendXmlValues(lines, BuildOutputValues(project, null, target.Environment), 4);
+                    AppendXmlValues(lines, BuildOutputValues(project, null, target.Environment, accessToken), 4);
                     lines.Add("  </environment>");
                 }
                 else if (target.Environment == null)
                 {
                     lines.Add($"  <service name=\"{EscapeXml(ExportServiceName(target.Service, "XML", false))}\">");
                     lines.Add("    <global>");
-                    AppendXmlValues(lines, BuildOutputValues(project, target.Service, null), 6);
+                    AppendXmlValues(lines, BuildOutputValues(project, target.Service, null, accessToken), 6);
                     lines.Add("    </global>");
                     lines.Add("  </service>");
                 }
                 else
                 {
                     lines.Add($"  <service name=\"{EscapeXml(ExportServiceName(target.Service, "XML", false))}\" environment=\"{EscapeXml(ExportEnvironmentName(target.Environment, "XML"))}\">");
-                    AppendXmlValues(lines, BuildOutputValues(project, target.Service, target.Environment), 4);
+                    AppendXmlValues(lines, BuildOutputValues(project, target.Service, target.Environment, accessToken), 4);
                     lines.Add("  </service>");
                 }
             }
@@ -1848,28 +2364,40 @@ namespace EnvSecured.WinForms.Cli
 
         private static void PrintHelp()
         {
-            Console.WriteLine("EnvSecured Studio CLI");
+            Console.WriteLine("EnvSecured Studio CLI " + CliVersion());
             Console.WriteLine("Usage:");
             Console.WriteLine("  EnvSecured.exe <command> [options]");
             Console.WriteLine();
             Console.WriteLine("Project commands:");
             Console.WriteLine("  new --file <path> --name <name>");
             Console.WriteLine("  save-as --file <path> --to <path> [--overwrite true] [--delete-source true]");
+            Console.WriteLine("  migrate --file <path> [--password <pwd>]");
             Console.WriteLine("  merge --file <target.envs> --input a.envs[;b.envs] [--overwrite true|false] [--input-password pwd|--input-passwords pwd1;pwd2]");
             Console.WriteLine("  split --file <source.envs> --to <target.envs> [--key KEY[;KEY2]|--owner-service service|--scope-service service|--all true] [--include-refs true|false] [--to-password pwd] [--encryption open|secrets-only|all-values|whole-json]");
             Console.WriteLine("  project --file <path> [--name name] [--id id] [--description text]");
             Console.WriteLine("  info|validate --file <path>");
             Console.WriteLine("  list --file <path> --what variables|values|services|envs [--show-secrets]");
             Console.WriteLine("  get --file <path> --key KEY [--service backend|global] [--env dev|global] [--value calculated|raw] [--calculated true|false] [--format json|--json] [--show-secrets]");
+            Console.WriteLine("  variable-show --file <path> --key KEY [--service backend] [--env dev] [--show-secrets]");
+            Console.WriteLine("  token-list --file <path>");
+            Console.WriteLine("  token-show --file <path> --id token-id [--format json]");
+            Console.WriteLine("  token-create --file <path> [--type custom|service|environment|service-environment] [--id token-id] [--name name] [--grants grant1;grant2] [--service backend] [--env dev] [--expires ISO-8601]");
+            Console.WriteLine("  token-create-defaults --file <path>  (one token per active service and one per active environment)");
+            Console.WriteLine("  token-rotate|token-revoke|token-delete --file <path> --id token-id");
+            Console.WriteLine("  sync-list --file <path> [--format json]");
+            Console.WriteLine("  sync-provider-add|sync-provider-edit|sync-provider-delete --file <path> ...");
+            Console.WriteLine("  sync-provider-init|sync-key-rotate --file <path> --provider <id|name>");
+            Console.WriteLine("  sync-preview --file <path> --provider <id|name> [--service id[;id2]] [--env id[;id2]] [--check true] [--format json]");
+            Console.WriteLine("  sync-push --file <path> --provider <id|name> [--service id[;id2]] [--env id[;id2]] [--apply true] [--allow-delete true] [--check true] [--format json]");
             Console.WriteLine("  --register-association | --unregister-association");
             Console.WriteLine("  --check-update | --download-update");
             Console.WriteLine("    --check-update exit codes: 0 no update, 10 update available, 2 check failed");
             Console.WriteLine();
             Console.WriteLine("Editing:");
-            Console.WriteLine("  add-service --file <path> --name backend [--prefix BACKEND_] [--folder backend] [--strict-contracts]");
+            Console.WriteLine("  add-service --file <path> --name backend [--prefix BACKEND_] [--folder backend] [--strict-contracts] [--default-token true|false]");
             Console.WriteLine("  edit-service --file <path> --service backend [--name name] [--display text] [--folder path] [--prefix PREFIX_] [--active true|false] [--shared-without-contract true|false]");
             Console.WriteLine("  delete-service --file <path> --service backend");
-            Console.WriteLine("  add-env --file <path> --name dev");
+            Console.WriteLine("  add-env --file <path> --name dev [--default-token true|false]");
             Console.WriteLine("  edit-env --file <path> --env dev [--name name] [--display text] [--active true|false]");
             Console.WriteLine("  delete-env --file <path> --env dev");
             Console.WriteLine("  add-var --file <path> --key DATABASE_HOST [--secret] [--allow-shared-secret] [--allow-null] [--allow-blank]");
@@ -1878,7 +2406,7 @@ namespace EnvSecured.WinForms.Cli
             Console.WriteLine("  set --file <path> --key KEY --value VALUE [--service backend|global] [--env dev|global] [--secret]");
             Console.WriteLine("  delete-value --file <path> --key KEY [--service backend|global] [--env dev|global]");
             Console.WriteLine("  generate --file <path> --key KEY [--env dev|--all-envs true] [--overwrite true|false]");
-            Console.WriteLine("  use|unuse --file <path> --key KEY --service backend [--optional] [--visible true|false] [--override true|false] [--allow-broken-scope true]");
+            Console.WriteLine("  use|unuse --file <path> --key KEY --service backend [--optional] [--visible true|false] [--override true|false] [--sync true|false] [--allow-broken-scope true]");
             Console.WriteLine("  auto-assign --file <path> [--key KEY]");
             Console.WriteLine("  compact-values --file <path>");
             Console.WriteLine();
@@ -1889,6 +2417,61 @@ namespace EnvSecured.WinForms.Cli
             Console.WriteLine("  export --file <path> [--all] [--service backend|global|*] [--env dev|global|*] [--output-root C:\\project] [--format CONFIG|TOML|YAML|XML|JSON] [--ext .env] [--single-file true|false] [--single-file-mask {project_name}{.ext}] [--render-mode data|manifest|both] [--manifest-mask mask] [--global-mask mask] [--env-mask mask] [--service-mask mask] [--service-env-mask mask]");
             Console.WriteLine();
             Console.WriteLine("Encrypted projects: pass --password <pwd> or ENVSECURED_PASSWORD.");
+            Console.WriteLine("Token reads: pass --token-file <path> or ENVSECURED_TOKEN. Direct --token is supported but may be visible in process history.");
+        }
+
+        private static void PrintHelpOverview()
+        {
+            Console.WriteLine("EnvSecured Studio " + CliVersion());
+            Console.WriteLine("Encrypted service/environment configuration vault with a Windows UI and headless CLI.");
+            Console.WriteLine();
+            Console.WriteLine("Usage:");
+            Console.WriteLine("  EnvSecured.exe                       Open the Windows application");
+            Console.WriteLine("  EnvSecured.exe <command> [options]   Run a CLI command");
+            Console.WriteLine("  EnvSecured.exe <command> --help      Show command-specific help");
+            Console.WriteLine("  EnvSecured.exe --help commands       List every CLI command");
+            Console.WriteLine("  EnvSecured.exe --help docs           Print the full Markdown CLI guide");
+        }
+
+        private static void PrintFullDocs()
+        {
+            var assembly = typeof(CliRunner).Assembly;
+            using (var stream = assembly.GetManifestResourceStream("EnvSecured.Cli.md"))
+            {
+                if (stream == null)
+                {
+                    throw new InvalidOperationException("Embedded CLI documentation was not found.");
+                }
+                using (var reader = new StreamReader(stream))
+                {
+                    Console.Write(reader.ReadToEnd());
+                }
+            }
+        }
+
+        private static string CliVersion()
+        {
+            return typeof(CliRunner).Assembly.GetName().Version?.ToString() ?? "unknown";
+        }
+
+        private static void PrintCommandHelp(string command)
+        {
+            switch (command)
+            {
+                case "sync": PrintSyncHelp(); return;
+                case "sync-list": PrintSyncListHelp(); return;
+                case "sync-preview": PrintSyncPreviewHelp(); return;
+                case "sync-push": PrintSyncPushHelp(); return;
+                case "sync-provider-add": PrintSyncProviderAddHelp(); return;
+                case "sync-provider-edit": PrintSyncProviderEditHelp(); return;
+                case "sync-provider-delete": PrintSyncProviderDeleteHelp(); return;
+                case "sync-provider-init": PrintSyncProviderInitHelp(); return;
+                case "sync-key-rotate": PrintSyncKeyRotateHelp(); return;
+                default:
+                    Console.WriteLine("No command-specific help is available for '" + command + "'.");
+                    Console.WriteLine("Run EnvSecured.exe --help for the complete command list.");
+                    return;
+            }
         }
 
         private sealed class Target

@@ -6,5 +6,6 @@
   <ItemGroup>
     <ProjectReference Include="..\EnvSecured.Core\EnvSecured.Core.csproj" />
     <Reference Include="System.Security" />
+    <Reference Include="System.Web.Extensions" />
   </ItemGroup>
 </Project>

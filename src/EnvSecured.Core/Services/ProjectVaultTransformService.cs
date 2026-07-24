@@ -40,6 +40,9 @@ namespace EnvSecured.Core.Services
             result.Contracts = result.Contracts.Where(c => variableIds.Contains(c.VariableId)).ToList();
             result.Values = result.Values.Where(v => variableIds.Contains(v.VariableId)).ToList();
             result.Crypto = new VaultCryptoMetadata();
+            result.AccessTokens = new List<AccessTokenModel>();
+            result.VaultIntegrity = new IntegrityTagModel();
+            foreach (var variable in result.Variables) variable.Integrity = new IntegrityTagModel();
             if (result.Settings != null)
             {
                 result.Settings.CliExportPasswordRequiredEncrypted = null;
@@ -67,6 +70,7 @@ namespace EnvSecured.Core.Services
                 MergeContracts(target, source, serviceMap, variableMap, result);
                 MergeValues(target, source, serviceMap, environmentMap, variableMap, overwriteValues, result);
                 MergeOutputTargets(target, source, serviceMap, environmentMap);
+                target.VaultIntegrity = new IntegrityTagModel();
             }
 
             return result;
@@ -185,6 +189,7 @@ namespace EnvSecured.Core.Services
                 {
                     var clone = Clone(variable);
                     clone.Id = UniqueId(target.Variables.Select(v => v.Id), clone.Id);
+                    clone.Integrity = new IntegrityTagModel();
                     target.Variables.Add(clone);
                     existing = clone;
                     result.VariablesAdded++;
@@ -244,6 +249,7 @@ namespace EnvSecured.Core.Services
 
                 var clone = Clone(value);
                 clone.Id = ProjectService.NewId();
+                clone.Version = Math.Max(1, clone.Version + 1);
                 clone.VariableId = variableId;
                 clone.ServiceId = serviceId;
                 clone.EnvironmentId = environmentId;
