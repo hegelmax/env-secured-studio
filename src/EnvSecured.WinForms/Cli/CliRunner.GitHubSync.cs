@@ -534,32 +534,69 @@ namespace EnvSecured.WinForms.Cli
             }
         }
 
+        // GitHub's secondary limits allow about 80 content-creating requests per minute and 500 per hour.
+        // Pacing writes keeps a large plan under the per-minute cap.
+        internal static TimeSpan GitHubWriteInterval = TimeSpan.FromSeconds(1);
+
         private static void ApplyCliGitHubPlan(string ghPath, string repositoryRef, List<CliGitHubSyncRow> plan)
         {
-            foreach (var row in plan.Where(p => p.Action != "Unchanged" && p.Action != "Conflict"))
+            var writes = plan.Where(p => p.Action != "Unchanged" && p.Action != "Conflict").ToList();
+            if (writes.Count == 0) return;
+            if (writes.Count > 1)
+                Console.Error.WriteLine("Applying " + writes.Count + " GitHub writes, about one per " + GitHubWriteInterval.TotalSeconds.ToString("0.#", System.Globalization.CultureInfo.InvariantCulture) + " s.");
+
+            var completed = 0;
+            var pacing = Stopwatch.StartNew();
+            foreach (var row in writes)
             {
-                if (row.Type == "Environment")
+                if (completed > 0)
                 {
-                    var endpoint = "repos/" + repositoryRef + "/environments/" + Uri.EscapeDataString(row.GitHubEnvironment);
-                    RequireGitHubCommand(ghPath, "api -X PUT " + QuoteArgument(endpoint), null, "Cannot create GitHub environment '" + row.GitHubEnvironment + "'.");
-                    continue;
+                    var wait = GitHubWriteInterval - pacing.Elapsed;
+                    if (wait > TimeSpan.Zero) System.Threading.Thread.Sleep(wait);
                 }
-
-                var typeCommand = row.IsSecret ? "secret" : "variable";
-                if (row.Action == "Delete")
+                pacing.Restart();
+                try
                 {
-                    RequireGitHubCommand(ghPath,
-                        typeCommand + " delete " + QuoteArgument(row.Key) + " --env " + QuoteArgument(row.GitHubEnvironment) + " --repo " + QuoteArgument(repositoryRef),
-                        null,
-                        "Cannot delete GitHub " + typeCommand + " '" + row.Key + "'.");
-                    continue;
+                    ApplyCliGitHubRow(ghPath, repositoryRef, row);
                 }
-
-                RequireGitHubCommand(ghPath,
-                    typeCommand + " set " + QuoteArgument(row.Key) + " --env " + QuoteArgument(row.GitHubEnvironment) + " --repo " + QuoteArgument(repositoryRef),
-                    row.RawLocalValue ?? string.Empty,
-                    "Cannot set GitHub " + typeCommand + " '" + row.Key + "'.");
+                catch (GitHubRateLimitException ex)
+                {
+                    throw new InvalidOperationException(
+                        "GitHub rate limit reached after " + completed + " of " + writes.Count + " writes; the rest were not applied. " +
+                        "Do not retry right away: wait for the limit to reset (up to an hour), then run sync-push again. " +
+                        "It writes only what is still different. " + ex.Message, ex);
+                }
+                catch (InvalidOperationException ex)
+                {
+                    throw new InvalidOperationException(ex.Message + " (" + completed + " of " + writes.Count + " writes were applied before the failure.)", ex);
+                }
+                completed++;
             }
+        }
+
+        private static void ApplyCliGitHubRow(string ghPath, string repositoryRef, CliGitHubSyncRow row)
+        {
+            if (row.Type == "Environment")
+            {
+                var endpoint = "repos/" + repositoryRef + "/environments/" + Uri.EscapeDataString(row.GitHubEnvironment);
+                RequireGitHubCommand(ghPath, "api -X PUT " + QuoteArgument(endpoint), null, "Cannot create GitHub environment '" + row.GitHubEnvironment + "'.");
+                return;
+            }
+
+            var typeCommand = row.IsSecret ? "secret" : "variable";
+            if (row.Action == "Delete")
+            {
+                RequireGitHubCommand(ghPath,
+                    typeCommand + " delete " + QuoteArgument(row.Key) + " --env " + QuoteArgument(row.GitHubEnvironment) + " --repo " + QuoteArgument(repositoryRef),
+                    null,
+                    "Cannot delete GitHub " + typeCommand + " '" + row.Key + "'.");
+                return;
+            }
+
+            RequireGitHubCommand(ghPath,
+                typeCommand + " set " + QuoteArgument(row.Key) + " --env " + QuoteArgument(row.GitHubEnvironment) + " --repo " + QuoteArgument(repositoryRef),
+                row.RawLocalValue ?? string.Empty,
+                "Cannot set GitHub " + typeCommand + " '" + row.Key + "'.");
         }
 
         private static void PrintCliGitHubPlan(List<CliGitHubSyncRow> plan, Dictionary<string, string> options, bool applied)
@@ -660,7 +697,7 @@ namespace EnvSecured.WinForms.Cli
                 process.StartInfo.EnvironmentVariables["GH_PROMPT_DISABLED"] = "1";
                 process.OutputDataReceived += (s, e) => { if (e.Data != null) stdout.AppendLine(e.Data); };
                 process.ErrorDataReceived += (s, e) => { if (e.Data != null) stderr.AppendLine(e.Data); };
-                process.Start();
+                StartWithUtf8StandardInput(process);
                 process.BeginOutputReadLine();
                 process.BeginErrorReadLine();
                 if (standardInput != null)
@@ -675,11 +712,74 @@ namespace EnvSecured.WinForms.Cli
                 }
                 if (process.ExitCode != 0)
                 {
-                    var detail = FirstCliErrorLine(stderr.ToString());
-                    throw new InvalidOperationException(errorPrefix + (string.IsNullOrWhiteSpace(detail) ? string.Empty : " " + detail));
+                    var errorText = stderr.ToString();
+                    var detail = FirstCliErrorLine(errorText);
+                    var message = errorPrefix + (string.IsNullOrWhiteSpace(detail) ? string.Empty : " " + detail);
+                    if (IsGitHubRateLimitError(errorText)) throw new GitHubRateLimitException(message);
+                    throw new InvalidOperationException(message);
                 }
                 return stdout.ToString();
             }
+        }
+
+        private static readonly object StandardInputEncodingLock = new object();
+
+        // .NET Framework builds Process.StandardInput from Console.InputEncoding and flushes its preamble
+        // during Start(). On a UTF-8 console that prepends a BOM to every value piped to gh (so GitHub
+        // stores "﻿value" and every later sync sees a difference); on an ANSI/OEM console non-ASCII
+        // characters are lost. Swap in BOM-less UTF-8 just for Start(), then restore the console.
+        private static void StartWithUtf8StandardInput(Process process)
+        {
+            if (!process.StartInfo.RedirectStandardInput)
+            {
+                process.Start();
+                return;
+            }
+
+            lock (StandardInputEncodingLock)
+            {
+                Encoding original = null;
+                var overridden = false;
+                try
+                {
+                    original = Console.InputEncoding;
+                    Console.InputEncoding = new UTF8Encoding(false);
+                    overridden = true;
+                }
+                catch (Exception ex) when (ex is System.IO.IOException || ex is UnauthorizedAccessException || ex is ArgumentException)
+                {
+                }
+
+                try
+                {
+                    process.Start();
+                }
+                finally
+                {
+                    if (overridden)
+                    {
+                        try { Console.InputEncoding = original; } catch (Exception ex) when (ex is System.IO.IOException || ex is UnauthorizedAccessException || ex is ArgumentException) { }
+                    }
+                }
+            }
+
+            if (process.StandardInput.Encoding.GetPreamble().Length > 0 || process.StandardInput.Encoding.CodePage != Encoding.UTF8.CodePage)
+            {
+                try { process.Kill(); } catch { }
+                throw new InvalidOperationException("Cannot pass values to GitHub CLI as UTF-8 without a byte order mark; nothing was written.");
+            }
+        }
+
+        private static bool IsGitHubRateLimitError(string stderr)
+        {
+            var text = stderr ?? string.Empty;
+            return text.IndexOf("rate limit", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                text.IndexOf("HTTP 429", StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        private sealed class GitHubRateLimitException : InvalidOperationException
+        {
+            public GitHubRateLimitException(string message) : base(message) { }
         }
 
         private static IEnumerable<Dictionary<string, object>> ReadCliGitHubJsonPages(string json)

@@ -3,6 +3,7 @@ using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
+using System.Text;
 using EnvSecured.Core.Services;
 using Xunit;
 
@@ -83,6 +84,63 @@ namespace EnvSecured.Tests
             Assert.Equal(0, method.Invoke(null, new object[] { new[] { "Update" }, false, false }));
             Assert.Equal(0, method.Invoke(null, new object[] { new[] { "Update" }, true, true }));
             Assert.Equal(2, method.Invoke(null, new object[] { new[] { "Conflict" }, false, false }));
+        }
+
+        [Fact]
+        public void ValuesPipedToGitHubCliAreUtf8WithoutByteOrderMark()
+        {
+            // Reproduces a UTF-8 console (chcp 65001), where .NET Framework used to prepend EF-BB-BF to stdin.
+            Encoding original = null;
+            try { original = Console.InputEncoding; Console.InputEncoding = Encoding.UTF8; } catch (System.IO.IOException) { original = null; }
+            try
+            {
+                var script = "$m = New-Object IO.MemoryStream; [Console]::OpenStandardInput().CopyTo($m); [BitConverter]::ToString($m.ToArray())";
+                var encoded = Convert.ToBase64String(Encoding.Unicode.GetBytes(script));
+                var method = CliType.GetMethod("RequireGitHubCommand", BindingFlags.NonPublic | BindingFlags.Static);
+                var output = (string)method.Invoke(null, new object[] { "powershell.exe", "-NoProfile -NonInteractive -EncodedCommand " + encoded, "abé", "test" });
+
+                Assert.Equal("61-62-C3-A9", output.Trim());
+            }
+            finally
+            {
+                if (original != null) Console.InputEncoding = original;
+            }
+        }
+
+        [Fact]
+        public void RateLimitStopsApplyAndReportsProgress()
+        {
+            var fakeGh = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "envsecured-fake-gh-" + Guid.NewGuid().ToString("N") + ".cmd");
+            System.IO.File.WriteAllText(fakeGh, "@echo off\r\nmore >nul\r\necho gh: You have exceeded a secondary rate limit. (HTTP 403) 1>&2\r\nexit /b 1\r\n");
+            var intervalField = CliType.GetField("GitHubWriteInterval", BindingFlags.NonPublic | BindingFlags.Static);
+            var originalInterval = intervalField.GetValue(null);
+            try
+            {
+                intervalField.SetValue(null, TimeSpan.Zero);
+                var rowType = CliType.GetNestedType("CliGitHubSyncRow", BindingFlags.NonPublic);
+                var plan = (IList)Activator.CreateInstance(typeof(List<>).MakeGenericType(rowType));
+                foreach (var key in new[] { "A", "B" })
+                {
+                    var row = Activator.CreateInstance(rowType);
+                    rowType.GetProperty("Action").SetValue(row, "Update");
+                    rowType.GetProperty("Type").SetValue(row, "Variable");
+                    rowType.GetProperty("Key").SetValue(row, key);
+                    rowType.GetProperty("RawLocalValue").SetValue(row, "v");
+                    rowType.GetProperty("GitHubEnvironment").SetValue(row, "development");
+                    plan.Add(row);
+                }
+
+                var method = CliType.GetMethod("ApplyCliGitHubPlan", BindingFlags.NonPublic | BindingFlags.Static);
+                var ex = Assert.Throws<TargetInvocationException>(() => method.Invoke(null, new object[] { fakeGh, "owner/repo", plan }));
+
+                Assert.IsType<InvalidOperationException>(ex.InnerException);
+                Assert.Contains("rate limit reached after 0 of 2 writes", ex.InnerException.Message);
+            }
+            finally
+            {
+                intervalField.SetValue(null, originalInterval);
+                System.IO.File.Delete(fakeGh);
+            }
         }
 
         private static List<PlanRow> BuildPlan(string mode, bool allowDeletes, string existingRemoteValue = "old-value")

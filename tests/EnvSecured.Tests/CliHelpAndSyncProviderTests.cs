@@ -17,7 +17,7 @@ namespace EnvSecured.Tests
             var result = Run("--help");
 
             Assert.Equal(0, result.Code);
-            Assert.Contains("EnvSecured Studio 1.2.0.10", result.Output);
+            Assert.Contains("EnvSecured Studio 1.2.1.11", result.Output);
             Assert.Contains("--help commands", result.Output);
             Assert.Contains("--help docs", result.Output);
             Assert.DoesNotContain("Project commands:", result.Output);
@@ -29,7 +29,7 @@ namespace EnvSecured.Tests
             var result = Run("--help", "commands");
 
             Assert.Equal(0, result.Code);
-            Assert.Contains("EnvSecured Studio CLI 1.2.0.10", result.Output);
+            Assert.Contains("EnvSecured Studio CLI 1.2.1.11", result.Output);
             Assert.Contains("Project commands:", result.Output);
             Assert.Contains("sync-provider-add", result.Output);
         }
