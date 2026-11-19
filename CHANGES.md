@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.2.1.11
+
+- Fixed `sync-push` rewriting every GitHub variable and secret on each run. On a UTF-8 console, values piped to `gh` were stored with a leading byte order mark, so the next sync always saw them as changed; on ANSI/OEM consoles non-ASCII characters were lost. Values are now passed as UTF-8 without a BOM. The first push after upgrading rewrites the affected values once to remove the stored BOM.
+- `sync-push --apply` now paces GitHub writes to about one per second and stops on a GitHub rate-limit error, reporting how many writes were applied. Re-running later writes only what is still different.
+- The GitHub sync preview in EnvSecured Studio now reports a failed GitHub read instead of showing every value as `Create`.
+
 ## 1.2.0.10
 
 - Added the nested `EnvSecured.Vault` v2 storage format: owner values and service scopes now live inside each variable, explicit `Visible`, `AllowOverride`, `Export`, and `Required` flags replace serialized contracts, and settings are grouped under `Settings.Output` and `Settings.Cli`.
