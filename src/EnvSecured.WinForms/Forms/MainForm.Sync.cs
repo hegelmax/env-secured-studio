@@ -552,15 +552,20 @@ namespace EnvSecured.WinForms.Forms
             }
 
             var basePath = "repos/" + organization.Trim() + "/" + repository.Trim() + "/environments/" + Uri.EscapeDataString(environment.Trim());
-            if (RunGitHubCommand(ghPath, "api " + basePath + "/variables --paginate", out var variablesJson, out _))
+            // A failed read must not look like an empty environment: that would turn every value into "Create".
+            if (!RunGitHubCommand(ghPath, "api " + basePath + "/variables --paginate", out var variablesJson, out var variablesError))
             {
-                ReadGitHubVariables(variablesJson, result.Variables);
+                // The environment itself does not exist yet: everything is genuinely missing.
+                if ((variablesError ?? string.Empty).IndexOf("HTTP 404", StringComparison.OrdinalIgnoreCase) >= 0) return result;
+                throw new InvalidOperationException("Cannot load variables from GitHub environment '" + environment + "'. " + ShortCommandError(variablesError));
             }
+            ReadGitHubVariables(variablesJson, result.Variables);
 
-            if (RunGitHubCommand(ghPath, "api " + basePath + "/secrets --paginate", out var secretsJson, out _))
+            if (!RunGitHubCommand(ghPath, "api " + basePath + "/secrets --paginate", out var secretsJson, out var secretsError))
             {
-                ReadGitHubSecrets(secretsJson, result.Secrets);
+                throw new InvalidOperationException("Cannot load secrets from GitHub environment '" + environment + "'. " + ShortCommandError(secretsError));
             }
+            ReadGitHubSecrets(secretsJson, result.Secrets);
 
             return result;
         }
